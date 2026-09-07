@@ -25,13 +25,13 @@ the `dot-*` family runs together.
 
 | | |
 | --- | --- |
-| [dot-fps-controller](../dot-fps-controller) | Classic strafe movement: air-strafing, surf, bunny-hopping, styles |
-| [dot-timer](../dot-timer) | Zones, tracks, stages, styles, records, replays |
-| [dot-map](../dot-map) | Three maps in one game, with a rotation |
-| [dot-props](../dot-props) | Spawnable props, a physics gun, a gravity gun |
-| [dot-leaderboard](../dot-leaderboard) | Boards, ranking points, player statistics |
-| [dot-server](../dot-server) | A dedicated server: console, RCON, permissions, modules |
-| [dot-core](../dot-core) | The foundation all of them share |
+| [dot-fps-controller](https://github.com/modcommunity/dot-fps-controller) | Classic strafe movement: air-strafing, surf, bunny-hopping, styles |
+| [dot-timer](https://github.com/modcommunity/dot-timer) | Zones, tracks, stages, styles, records, replays |
+| [dot-map](https://github.com/modcommunity/dot-map) | Three maps in one game, with a rotation |
+| [dot-props](https://github.com/modcommunity/dot-props) | Spawnable props, a physics gun, a gravity gun |
+| [dot-leaderboard](https://github.com/modcommunity/dot-leaderboard) | Boards, ranking points, player statistics |
+| [dot-server](https://github.com/modcommunity/dot-server) | A dedicated server: console, RCON, permissions, modules |
+| [dot-core](https://github.com/modcommunity/dot-core) | The foundation all of them share |
 
 ## Playing it
 

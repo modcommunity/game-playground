@@ -26,6 +26,18 @@ const CHANNEL := "playground.module"
 
 var game: Playground = null
 
+## The netcode, and the seam that joins it to the game. Built here because a module is
+## what a dedicated server loads and unloads, so the netcode goes away with the game
+## rather than outliving it.
+var net: DotNetManager = null
+var bridge: PlaygroundNetBridge = null
+
+## Which userids have already been given a player, so a re-fired spawn does not add a
+## second one.
+var _joined: Dictionary = {}
+
+var _tick: int = 0
+
 ## Per-admin zone painters, by session user id.
 ##
 ## One each, because two admins drawing at once would otherwise share a first corner
@@ -61,6 +73,11 @@ func _module_load() -> DotResult:
 			DotError.CODE_STATE,
 			"No Playground is registered. Create one before loading this module."
 		)
+
+	var netted := _build_netcode()
+
+	if not netted.ok:
+		return netted
 
 	# --- The timer ---------------------------------------------------------
 	add_command(
@@ -187,16 +204,76 @@ func _module_unload() -> void:
 	_painters.clear()
 
 
+# --- The netcode -----------------------------------------------------------
+
+func _build_netcode() -> DotResult:
+	net = DotNetManager.new()
+	net.name = "Net"
+	net.is_server = true
+	net.local_peer_id = 1
+	net.auto_tick = false
+	net.config_file = ""
+
+	var config := DotNetConfig.new()
+	config.tick_rate = game.tick_rate
+	config.snapshot_rate = 32
+	config.enable_prediction = true
+	config.enable_lag_compensation = false
+	config.max_entities_per_snapshot = 64
+	config.world_extent = 512.0
+	net.config = config
+	add_child(net)
+
+	var ready_result := net.setup()
+
+	if not ready_result.ok:
+		return ready_result.wrap("The netcode could not start")
+
+	bridge = PlaygroundNetBridge.new()
+	bridge.name = "Bridge"
+	add_child(bridge)
+
+	# `server` is the node the link mirrors: a client's DotClientLink is named to match,
+	# and the name IS the RPC routing.
+	var attached := bridge.attach(game, net, server)
+
+	if not attached.ok:
+		return attached
+
+	net.messages.seal()
+	return net.start()
+
+
+## The server's tick, which is the whole game's.
+##
+## Driven from here rather than by the game's own loop, because it has to happen between
+## dot-net applying the inputs that arrived and building the snapshot that goes back out.
+## `Playground.external_tick` is what stands the game's loop down.
+func _physics_process(_delta: float) -> void:
+	if not loaded or bridge == null:
+		return
+
+	_tick += 1
+	bridge.server_tick(_tick)
+
+
 # --- Sessions --------------------------------------------------------------
 
 ## A client finished the signon and is in the world.
 ##
 ## `client_spawn`, not `client_connected`: a connected client has a socket and
 ## nothing else — no identity, no content, no confirmation it can load the map.
+## [b]`client_spawn` carries `userid`, and it does NOT carry `peer_id`.[/b] This handler
+## asked for one, got 0, looked a session up by it and found null — and a null session is
+## a legitimate thing to find, so it returned quietly and NOBODY EVER JOINED. Nothing
+## errored, in every configuration, for as long as this module has existed; it survived
+## because the only thing that had ever loaded it was a headless test that adds its
+## players directly. The family's CLAUDE.md has carried this exact warning since
+## game-hungario hit it.
 func _on_client_spawn(event: DotEvent) -> void:
-	var session := server.session_of(event.get_int("peer_id"))
+	var session := server.session_by_userid(event.get_int("userid"))
 
-	if session == null:
+	if session == null or _joined.has(session.userid):
 		return
 
 	var id := _player_id(session)
@@ -204,16 +281,45 @@ func _on_client_spawn(event: DotEvent) -> void:
 	if game.players.has(id):
 		return
 
-	game.add_player(id, session.label())
+	# Through the bridge, not through the game: the bridge is what builds the entity
+	# that replicates them and announces the join. game.add_player alone would put a
+	# player in the world that no client is ever told about.
+	var added := bridge.add_player(session.peer_id, session.userid, session.label())
+
+	if not added.ok:
+		log_warn("could not add a player", {
+			"userid": session.userid, "error": str(added.error)
+		})
+		return
+
+	_joined[session.userid] = true
 
 	log_info("player joined the game", {"player": String(id)})
 
 
-func _on_client_disconnected(session: DotClientSession) -> void:
+## [b]`client_disconnected` emits TWO arguments — the session and a reason — and this
+## took one.[/b] Godot then refuses the call outright ("Method expected 1 argument(s), but
+## called with 2") and the handler NEVER RUNS: no player was ever removed, no peer was
+## ever released, and the server went on building a snapshot for every client that had
+## ever connected and sending it to a socket that was gone. One engine error per
+## disconnect and three per tick after that.
+##
+## It survived because nothing had ever disconnected from this module: `dedicated.tscn`
+## adds its players directly and tears the module down at the end. The default keeps it
+## callable from anything that emits only the session.
+func _on_client_disconnected(session: DotClientSession, _reason: String = "") -> void:
 	var id := _player_id(session)
 
 	_painters.erase(id)
-	game.remove_player(id)
+	_joined.erase(session.userid)
+
+	# The bridge releases the entity, tells every other client, and forgets the peer.
+	# Removing them from the game alone would leave a replicated entity pointing at a
+	# freed player.
+	if bridge != null:
+		bridge.remove_player(session.userid)
+	else:
+		game.remove_player(id)
 
 
 ## The id the game files records under.

@@ -64,7 +64,17 @@ const FALLBACK_MAP := &"pg_lobby"
 ## A JSON file to layer over [member config]. Passed straight through.
 @export var config_file: String = ""
 
+## The dedicated server's client link, when this client is on a server.
+##
+## [b]Set before this node enters the tree, and it is what decides which client this
+## is.[/b] With it, the playground is a mirror: it is not authoritative, it adds no
+## player of its own, and every action goes to the server as intent. Without it, this
+## is the local sandbox it has always been, which is what `headless_playground` drives.
+@export var link: Node = null
+
 var playground: Playground = null
+var net: DotNetManager = null
+var bridge: PlaygroundNetBridge = null
 var player: PlaygroundPlayer = null
 var hud: PlaygroundHud = null
 var camera: Camera3D = null
@@ -103,10 +113,32 @@ var _menu_down_at: float = 0.0
 ## Whether the menu is up because it was tapped rather than because Q is still down.
 var _menu_pinned: bool = false
 
+## Input sampling, on a networked client only. A local player samples through their own
+## [DotFpsSampler]; a networked one is handed a command by this loop instead, because
+## the command has to be stamped for a tick and kept for reconciliation.
+var _sampler: DotFpsSampler = null
+
+## The tool triggers, as command buttons. Held rather than edge-triggered: the server
+## decides what a press and a hold each mean (see PlaygroundNetBridge._drive_tools), and
+## a client that sent only the edges would drop one to packet loss and leave a player
+## holding a crate they have let go of.
+var _net_buttons: int = 0
+
 
 func _ready() -> void:
 	playground = Playground.new()
 	playground.name = "Playground"
+
+	# [b]A networked client is not authoritative, and this is where that is decided.[/b]
+	# Set afterwards it would be assigned to a game that had already booted:
+	# `Playground._ready` layers the config and loads the first map inside `add_child`,
+	# so a game told at that point that it is a mirror has already spent a map load
+	# believing it owned the world.
+	if config == null:
+		config = PlaygroundConfig.new()
+	if link != null:
+		config.authoritative = false
+
 	playground.config = config
 	playground.config_file = config_file
 	add_child(playground)
@@ -143,22 +175,46 @@ func _ready() -> void:
 			})
 			return
 
-	player = playground.add_player(player_id, display_name)
-	player.samples_input = true
+	if link != null:
+		# The server creates the player and JOIN is what tells this client about it, so
+		# there is nobody to adopt yet. Everything below that needs one checks.
+		var netcode := _build_netcode()
 
-	# The sampler is built in the player's _ready, which has already run — so it is
-	# built here instead. Setting the flag alone would leave a player who is
-	# supposed to be driving and never samples anything, which reads as the input
-	# being broken.
-	player.sampler = DotFpsSampler.new(player.controller.tunables)
-	DotFpsSampler.register_default_actions(player.sampler)
+		if not netcode.ok:
+			DotLog.error(CHANNEL, "the netcode would not start", {
+				"why": netcode.error.message
+			})
+			return
 
-	_build_view()
+		# [b]The view is NOT built here on a networked client, and that is the whole
+		# ordering.[/b] The camera is parented to the player, and on a server the player
+		# does not exist yet: HELLO names you and JOIN creates you, both of them packets
+		# that have not arrived. Building it now calls `add_child` on null, the camera is
+		# never in the tree, and `_process` then writes a global transform to a node that
+		# has no parent — once a frame, for ever.
+		#
+		# On desktop that is a red line per frame and a black screen. In a WASM build it
+		# is a hard `RuntimeError: null function` with no GDScript trace at all, which is
+		# what this cost to find. [method _adopt] builds it the moment JOIN lands.
+	else:
+
+		player = playground.add_player(player_id, display_name)
+		player.samples_input = true
+
+		# The sampler is built in the player's _ready, which has already run — so it is
+		# built here instead. Setting the flag alone would leave a player who is
+		# supposed to be driving and never samples anything, which reads as the input
+		# being broken.
+		player.sampler = DotFpsSampler.new(player.controller.tunables)
+		DotFpsSampler.register_default_actions(player.sampler)
+
+		_build_view()
 
 	hud = PlaygroundHud.new()
 	hud.name = "Hud"
 	add_child(hud)
-	hud.bind(playground, player_id)
+	if link == null:
+		hud.bind(playground, player_id)
 	_sync_hud()
 
 	# After the HUD, because for a CanvasItem tree order is draw order and a menu
@@ -166,6 +222,145 @@ func _ready() -> void:
 	_build_screens()
 
 	set_process(true)
+
+
+## Brings up the netcode and points it at the server's link.
+##
+## Mirrors [G2GClient]'s, because that is the one in this family proven against a real
+## dedicated server over a real socket.
+func _build_netcode() -> DotResult:
+	net = DotNetManager.new()
+	net.name = "Net"
+	net.is_server = false
+	net.local_peer_id = multiplayer.get_unique_id() if multiplayer != null else 2
+	net.auto_tick = false
+	net.config_file = ""
+
+	var net_config := DotNetConfig.new()
+	net_config.tick_rate = playground.tick_rate
+	net_config.snapshot_rate = 32
+	net_config.enable_prediction = true
+	net_config.enable_lag_compensation = false
+	net_config.max_entities_per_snapshot = 64
+	net_config.world_extent = 512.0
+	net.config = net_config
+	add_child(net)
+
+	var ready_result := net.setup()
+
+	if not ready_result.ok:
+		return ready_result
+
+	bridge = PlaygroundNetBridge.new()
+	bridge.name = "Bridge"
+	add_child(bridge)
+
+	var attached := bridge.attach(playground, net, link)
+
+	if not attached.ok:
+		return attached
+
+	net.messages.seal()
+
+	bridge.hello_received.connect(_on_hello)
+	bridge.roster_changed.connect(_on_roster_changed)
+	bridge.notice_received.connect(func(_pid: int, text: String) -> void:
+		if hud != null:
+			hud.notice(text)
+	)
+	bridge.finish_received.connect(func(pid: int, time: float, rank: int) -> void:
+		if hud != null and pid == bridge.local_player_id:
+			hud.notice("%s%s" % [
+				DotTimerRun.format_time(time),
+				" — rank %d" % rank if rank > 0 else ""
+			])
+	)
+
+	# Stock tunables until there is a player to ask. The sampler turns the view at the
+	# rate the player's style says, and at this point the server has not told us who we
+	# are — _adopt swaps them in the moment JOIN does.
+	_sampler = DotFpsSampler.new(DotFpsTunables.new())
+	DotFpsSampler.register_default_actions(_sampler)
+
+	# [b]Nothing may be sent to a peer before it says it can receive.[/b] dot-server's
+	# signon finishes and THEN the client builds its scene, so everything sent in
+	# between lands on a node that does not exist and is lost — one "Node not found"
+	# per call, and a client that never joins.
+	if link.has_method("is_playing") and bool(link.call("is_playing")):
+		bridge.ask_ready()
+	elif link.has_signal("spawned"):
+		link.connect("spawned", bridge.ask_ready, CONNECT_ONE_SHOT)
+
+	# Nothing in dot-net writes an RTT sample: it never touches a transport. A client
+	# that feeds none has a clock that believes the link is instant, and every command
+	# it stamps arrives after its tick has already been simulated.
+	if link.has_method("ping_ms"):
+		bridge.rtt_source = func() -> float:
+			return float(maxi(0, int(link.call("ping_ms"))))
+
+	return net.start()
+
+
+func _on_hello(id: int) -> void:
+	player_id = StringName("u%d" % id)
+
+	if hud != null:
+		hud.bind(playground, player_id)
+
+	_adopt()
+
+
+## [b]HELLO names you and JOIN creates you, in that order.[/b] Looking the player up on
+## HELLO alone gets null and never tries again — which is how g2gfast shipped a browser
+## client that connected, drew, showed a live HUD and walked around with a dead mouse
+## and a dead keyboard, because everything below the `player == null` guard in its input
+## handler never ran.
+func _on_roster_changed(_id: int) -> void:
+	_adopt()
+
+
+func _adopt() -> void:
+	if player != null or bridge == null or bridge.local_player_id == 0:
+		return
+
+	var mine: PlaygroundPlayer = playground.players.get(player_id)
+
+	if mine == null:
+		return
+
+	player = mine
+
+	# Now, and not before: this is the first moment there is a node to parent a camera
+	# to. See the note in _ready.
+	_build_view()
+
+	if _sampler != null:
+		_sampler.tunables = player.controller.tunables
+
+	_sync_hud()
+
+
+## The client's tick, driven by the netcode clock rather than by the engine's frame.
+##
+## The clock is asked how many ticks this frame is worth, because the engine's rate and
+## the server's need not agree — though the bridge adopts the server's on HELLO, which
+## is the only reason the two ever do.
+func _net_physics(delta: float) -> void:
+	if net == null or bridge == null or not net.is_running():
+		return
+
+	var ticks := net.clock.advance(delta)
+
+	var sampler := active_sampler()
+
+	if sampler == null:
+		return
+
+	for _i in range(ticks):
+		if net.clock.is_synced():
+			var command := sampler.sample(delta)
+			command.buttons |= _net_buttons
+			bridge.client_tick(net.clock.input_tick(), command)
 
 
 func _build_view() -> void:
@@ -215,7 +410,21 @@ func _build_screens() -> void:
 
 
 func _process(_delta: float) -> void:
-	if player == null or camera == null:
+	# [b]Once a frame, not once a tick.[/b] The interpolator blends two snapshots
+	# perfectly and is then useless if it is only ever asked at a tick boundary: remote
+	# players and every replicated prop would step at the snapshot rate however smoothly
+	# they were interpolated. dot-net shipped exactly that.
+	if net != null and net.is_running():
+		net.interpolate_frame()
+
+	# `is_inside_tree`, not just null. A camera whose parent was freed — a player who
+	# left, a map change — is a live object that is not in the scene, and writing a
+	# global transform to one is an engine error every frame rather than a crash that
+	# points anywhere.
+	if player == null or camera == null or not camera.is_inside_tree():
+		return
+
+	if not player.is_inside_tree():
 		return
 
 	# The camera follows the SIMULATED eye position rather than being parented to
@@ -245,6 +454,28 @@ func _menu_is_open() -> bool:
 
 
 # --- Input -----------------------------------------------------------------
+
+## The sampler the next simulated tick will actually read.
+##
+## [b]There are two of them and which one drives is a property of the deployment.[/b] A
+## networked client builds its command from `_sampler` in [method _net_physics], because
+## a command has to be stamped for a tick and kept for reconciliation. A local player
+## samples through its own `player.sampler` in `PlaygroundPlayer.simulate`, because there
+## is no tick to stamp it for.
+##
+## [b]This exists so the mouse and the tick cannot disagree about which one that is.[/b]
+## They did: `_on_mouse_motion` fed `player.sampler` unconditionally, and a networked
+## player is not built with a sampler of its own, so every mouse event was dropped by a
+## null guard while `_sampler` — the one being sampled — never saw one. Nothing errored
+## and nothing else broke, because `DotFpsSampler.sample` polls the `InputMap` rather
+## than reading events: the player walked, shot and spawned props with a dead mouse.
+## `game-g2gfast` had the right form already; this file was the outlier.
+func active_sampler() -> DotFpsSampler:
+	if link != null:
+		return _sampler
+
+	return player.sampler if player != null else null
+
 
 func _unhandled_input(event: InputEvent) -> void:
 	if player == null:
@@ -289,7 +520,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		KEY_E:
 			_spawn()
 		KEY_Z:
-			playground.props.undo(player_id)
+			if bridge != null:
+				bridge.ask_undo()
+			else:
+				playground.props.undo(player_id)
 		KEY_R:
 			_unfreeze_all()
 		KEY_1:
@@ -342,13 +576,15 @@ func _on_mouse_motion(event: InputEventMouseMotion) -> void:
 		player.phys_gun.rotate_held(-event.relative.x * 0.4, -event.relative.y * 0.4)
 		return
 
-	if player.sampler == null:
+	var sampler := active_sampler()
+
+	if sampler == null:
 		return
 
 	# Handed to the sampler, which accumulates it and spends it on the next
 	# simulated tick. Applying it to the view here would make the look a function of
 	# how many mouse events happened to land in a frame.
-	player.sampler.handle_event(event)
+	sampler.handle_event(event)
 
 
 func _on_mouse_button(event: InputEventMouseButton) -> void:
@@ -449,6 +685,11 @@ func _set_tool(id: StringName) -> void:
 
 	tool = id
 
+	# The server holds its own copy, because the server is what actuates a tool against
+	# somebody else's prop. A client saying which tool it holds is a request, not a fact.
+	if bridge != null and (id == TOOL_PHYS or id == TOOL_GRAV):
+		bridge.ask_tool(id)
+
 	if id != TOOL_PHYS and id != TOOL_GRAV:
 		# A weapon. Built from its definition, which loads its script by path — see
 		# PlaygroundWeapons for why a path and not a class.
@@ -512,6 +753,10 @@ func _cycle_weapon() -> void:
 
 
 func _primary_down() -> void:
+	if bridge != null:
+		_net_buttons |= DotFpsCommand.BUTTON_USER_0
+		return
+
 	if weapon != null:
 		_report(weapon.primary(
 			_space(), player.eye_position(), player.aim_direction()
@@ -526,12 +771,20 @@ func _primary_down() -> void:
 
 
 func _primary_up() -> void:
+	if bridge != null:
+		_net_buttons &= ~DotFpsCommand.BUTTON_USER_0
+		return
+
 	if tool == TOOL_PHYS and _holding:
 		player.phys_gun.release()
 		_holding = false
 
 
 func _secondary_down() -> void:
+	if bridge != null:
+		_net_buttons |= DotFpsCommand.BUTTON_USER_1
+		return
+
 	if weapon != null:
 		_report(weapon.secondary(
 			_space(), player.eye_position(), player.aim_direction()
@@ -560,6 +813,10 @@ func _secondary_down() -> void:
 
 
 func _secondary_up() -> void:
+	if bridge != null:
+		_net_buttons &= ~DotFpsCommand.BUTTON_USER_1
+		return
+
 	if tool == TOOL_GRAV and _pulling:
 		player.grav_gun.drop()
 		_pulling = false
@@ -598,6 +855,14 @@ func _punt() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	# On a server the tools are actuated by the SERVER from the buttons this client
+	# sends — see PlaygroundNetBridge._drive_tools. Running them here as well would be a
+	# second, disagreeing simulation of somebody else's rigid body, on a copy that is
+	# frozen and drawn from snapshots and could not move anyway.
+	if link != null:
+		_net_physics(delta)
+		return
+
 	if player == null:
 		return
 
@@ -632,6 +897,13 @@ func _spawn() -> void:
 			hud.notice("Nothing armed. Hold Q and pick something.")
 		return
 
+	# On a server the client asks and the server decides. The budget, the cooldown and
+	# the undo stack are the spawner's, and a second copy of those rules here is the bug
+	# this family has now shipped three times.
+	if bridge != null:
+		bridge.ask_spawn_prop(selected_prop)
+		return
+
 	var at := player.eye_position() + player.aim_direction() * SPAWN_REACH
 	playground.props.spawn(selected_prop, player_id, at)
 
@@ -659,11 +931,17 @@ func _on_tool_chosen(tool_id: StringName) -> void:
 func _on_menu_action(action: StringName) -> void:
 	match action:
 		&"undo":
-			if not playground.props.undo(player_id) and hud != null:
+			if bridge != null:
+				bridge.ask_undo()
+			elif not playground.props.undo(player_id) and hud != null:
 				hud.notice("Nothing to undo.")
 		&"unfreeze":
 			_unfreeze_all()
 		&"clear":
+			if bridge != null:
+				bridge.ask_clear_mine()
+				return
+
 			var removed := playground.props.clear_player(
 				player_id, DotPropSpawner.REASON_PLAYER
 			)
@@ -774,6 +1052,12 @@ func _cycle_style() -> void:
 
 	var chosen := styles[_style_index]
 
+	if bridge != null:
+		# The server owns which style a player is on: it decides what the movement IS,
+		# and both ends have to derive the same tunables or prediction diverges.
+		bridge.ask_style(chosen.id)
+		return
+
 	if playground.set_player_style(player_id, chosen.id) and hud != null:
 		hud.notice("Style: %s" % chosen.display_name)
 
@@ -811,6 +1095,13 @@ func _cycle_track() -> void:
 
 
 func _next_map() -> void:
+	# A client does not change the map; it rocks the vote and the server decides. One
+	# client loading a different world from everybody else is not a map change, it is a
+	# client playing alone in a world nobody else is in.
+	if bridge != null:
+		bridge.ask_rtv()
+		return
+
 	var next := playground.maps.rotation.choose(playground.players.size())
 
 	if next == null:

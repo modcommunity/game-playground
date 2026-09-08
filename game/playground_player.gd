@@ -59,7 +59,17 @@ var phys_gun: DotPhysGun = null
 var grav_gun: DotGravGun = null
 
 ## Set by the world so the timer is ticked with the same clock the movement uses.
-var tick_rate: int = 128
+## [b]Assigned through, not just stored.[/b] The controller sizes its step from its own
+## copy, taken in [method _ready] — so setting this on a player who already exists and
+## stopping there runs the game's loop at one rate and that player's movement at
+## another. Nothing errors; the player is simply correct on their own screen and wrong
+## on everybody else's. A client adopting the server's rate through HELLO is exactly
+## that case whenever a player already exists, which is every map change.
+var tick_rate: int = 128:
+	set(value):
+		tick_rate = value
+		if controller != null:
+			controller.tick_rate = value
 
 
 func _ready() -> void:

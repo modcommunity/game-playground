@@ -1597,6 +1597,57 @@ func _test_the_client_boots() -> void:
 		"and the player samples input, with a sampler actually built"
 	)
 
+	# [b]The mouse, end to end.[/b] Nothing in this family had ever delivered an
+	# `InputEventMouseMotion` to a client and looked at what happened, which is how a
+	# dead mouse survived: `_on_mouse_motion` fed `player.sampler` and `_net_physics`
+	# sampled `_sampler`, two different objects, and `DotFpsSampler.sample` polls the
+	# `InputMap` for movement so everything except the view kept working.
+	var before_yaw: float = (
+		client.player.controller.state.yaw if client.player != null else 0.0
+	)
+
+	var motion := InputEventMouseMotion.new()
+	motion.relative = Vector2(120.0, 0.0)
+	client._unhandled_input(motion)
+
+	# The sampler accumulates and spends it on the next simulated tick, so the view has
+	# not turned yet -- that is the point of accumulating it. Let the game tick.
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+
+	_check(
+		client.player != null
+		and not is_equal_approx(client.player.controller.state.yaw, before_yaw),
+		"a mouse motion turns the view",
+		"yaw %.3f -> %.3f" % [
+			before_yaw,
+			client.player.controller.state.yaw if client.player != null else 0.0
+		]
+	)
+
+	# And the routing rule itself, for the deployment this suite does not build. A
+	# networked client's mouse must reach `_sampler`, because that is the sampler
+	# `_net_physics` stamps a command from; `player.sampler` is null on one and the
+	# events went there. Asserted on the accessor rather than by standing a whole
+	# networked client up, because the bug was the disagreement between two lines and
+	# an accessor both of them go through is what fixed it.
+	_check(
+		client.active_sampler() == client.player.sampler,
+		"a local client's mouse feeds the player's own sampler"
+	)
+
+	var networked := PlaygroundClient.new()
+	networked.link = Node.new()
+	networked._sampler = DotFpsSampler.new(DotFpsTunables.new())
+
+	_check(
+		networked.active_sampler() == networked._sampler,
+		"and a networked client's feeds the one its tick stamps commands from"
+	)
+
+	networked.link.free()
+	networked.free()
+
 	client.queue_free()
 
 	await get_tree().process_frame

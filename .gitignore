@@ -13,6 +13,7 @@
 /addons/dot_leaderboard
 /addons/dot_ui
 /addons/dot_server
+/addons/dot_net
 
 # Records and zone files written at runtime
 /user_data/

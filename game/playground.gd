@@ -42,6 +42,15 @@ signal map_ready(map: DotMapDef)
 ## one has to be able to see that it has already happened.
 signal ready_for_players()
 
+## A player now exists in [member players]. The net bridge answers this by building the
+## entity that replicates them, so a player the GAME made itself — a bot, a test — is
+## replicated exactly like one a peer asked for.
+signal player_added(id: StringName)
+
+## A player is about to stop existing. Emitted BEFORE the teardown, so a listener can
+## still read what they were.
+signal player_removed(id: StringName)
+
 ## Somebody finished a run. [param rank] is 0 when it was not filed.
 signal run_filed(
 	player_id: StringName, run: DotTimerRun, rank: int, reason: String
@@ -72,6 +81,14 @@ signal run_filed(
 ## It is also what every [DotTimerRecord] this instance files is stamped with, which
 ## is what lets a disputed time be checked afterwards.
 @export_range(1, 240, 1) var tick_rate: int = 128
+
+## Registry scope, so a server game and a client game can share one process — the shape
+## every headless netcode test in this family takes.
+##
+## Without it both halves register under the same name and the second one wins, so a
+## component resolving `playground` reaches whichever game happened to boot last. There
+## is no error: the lookup succeeds, at the wrong game.
+@export var service_scope: StringName = &""
 
 ## Whether this instance is the authority: it times, it ranks, it spawns props.
 ##
@@ -116,6 +133,10 @@ var _tick: int = 0
 ## Frame time not yet spent on a simulation tick.
 var _accumulator: float = 0.0
 
+## Whether something else drives the tick — a net bridge, whose tick has to happen
+## between dot-net applying inputs and building the snapshot. See [PlaygroundNetBridge].
+var external_tick: bool = false
+
 
 func _ready() -> void:
 	if config == null:
@@ -138,7 +159,7 @@ func _ready() -> void:
 		"authoritative": authoritative,
 	})
 
-	DotRegistry.register(SERVICE, self)
+	DotRegistry.register(DotRegistry.scoped_name(SERVICE, service_scope), self)
 
 	world = Node3D.new()
 	world.name = "World"
@@ -195,6 +216,9 @@ func _resolve_tick_rate() -> int:
 ## there so a frame spike does not spend the next frame simulating a hundred ticks and
 ## make the stall worse.
 func _physics_process(delta: float) -> void:
+	if external_tick:
+		return
+
 	var step := 1.0 / float(maxi(tick_rate, 1))
 
 	_accumulator += delta
@@ -255,6 +279,69 @@ func _simulate_tick(step: float) -> void:
 			player.controller.state.pitch,
 			sample.buttons
 		)
+
+
+## One authoritative tick driven from outside, at a tick number the driver chose.
+##
+## The net bridge calls this instead of letting [method _physics_process] run, because
+## the game's tick has to happen between dot-net applying the inputs that arrived and
+## building the snapshot that goes back out. A game still running its own loop would
+## simulate somewhere between those two and send state from the wrong instant.
+func tick_once(tick: int) -> void:
+	_tick = tick
+	_simulate_tick(1.0 / float(maxi(tick_rate, 1)))
+
+
+## The timer half of a tick, and nothing else.
+##
+## What a CLIENT runs. A client may not simulate props — rigid bodies are not
+## reproducible across machines, which is the whole reason this sandbox is
+## server-authoritative — and it may not simulate remote players, which are
+## interpolated from snapshots. Its own player is simulated by the predictor through
+## [PlaygroundPlayerNet]. What is left is feeding every timer the position it can see,
+## so a local run reads a tick earlier than any packet could deliver it.
+func tick_timers_only(tick: int) -> void:
+	_tick = tick
+
+	for id in players:
+		var player: PlaygroundPlayer = players[id]
+		var sample: DotTimerSample = _samples[id]
+
+		player.fill_sample(sample)
+
+		timers.tick_player(
+			id,
+			sample.position,
+			sample.velocity,
+			sample.grounded,
+			sample.alive,
+			player.controller.state.yaw,
+			player.controller.state.pitch,
+			sample.buttons
+		)
+
+
+## Puts the whole game on a tick rate decided elsewhere — a server's `sv_tickrate`,
+## reaching a client through HELLO.
+##
+## [b]Every player's controller moves with it, not just the loop.[/b] A controller
+## keeps its own rate to size a step, so changing the game's and leaving theirs runs
+## the simulation at one rate and the movement at another — and the symptom is a
+## player who is correct on their own screen and wrong everywhere else.
+func set_tick_rate(rate: int) -> bool:
+	if rate <= 0 or rate == tick_rate:
+		return false
+
+	timers.set_tick_rate(rate)
+	# Read back rather than assigned: the timer manager clamps, and two copies of this
+	# number that disagree is the failure the whole method exists to prevent.
+	tick_rate = timers.tick_rate
+
+	for id in players:
+		(players[id] as PlaygroundPlayer).tick_rate = tick_rate
+
+	DotLog.info(CHANNEL, "tick rate adopted", {"tick_rate": tick_rate})
+	return true
 
 
 # --- Building --------------------------------------------------------------
@@ -564,12 +651,20 @@ func add_player(id: StringName, display_name: String) -> PlaygroundPlayer:
 
 	spawn_player(id)
 
+	# After the player is fully built and in the dictionary: a listener answers this
+	# by replicating them, and an entity built over a half-constructed player would
+	# replicate a controller that has no style and no timer.
+	player_added.emit(id)
+
 	return player
 
 
 func remove_player(id: StringName) -> void:
 	if not players.has(id):
 		return
+
+	# Before anything is torn down, so a listener can still read what they were.
+	player_removed.emit(id)
 
 	# Their rock-the-vote goes with them. Without it a server whose players trickle
 	# away keeps their votes while the threshold falls with the player count, so a
@@ -893,4 +988,4 @@ func describe_lines() -> PackedStringArray:
 
 
 func _exit_tree() -> void:
-	DotRegistry.unregister_instance(SERVICE, self)
+	DotRegistry.unregister_instance(DotRegistry.scoped_name(SERVICE, service_scope), self)

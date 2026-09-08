@@ -51,10 +51,23 @@ func _ready() -> void:
 
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 
+	# THE WHOLE RECT, not a box in the corner.
+	#
+	# `DotTimerHud` places its own compact block in a corner of whatever rect it is
+	# given, so the rect is the AREA it lays out inside rather than the block. The
+	# 360 x 200 this used to be would pin the overlay to the corner of a box in the
+	# corner, which is not what anything wanted.
 	timer_hud = DotTimerHud.new()
 	timer_hud.name = "Timer"
-	timer_hud.position = Vector2(24.0, 24.0)
-	timer_hud.size = Vector2(360.0, 200.0)
+	timer_hud.set_anchors_preset(Control.PRESET_FULL_RECT)
+	timer_hud.offset_left = 0.0
+	timer_hud.offset_top = 0.0
+	timer_hud.offset_right = 0.0
+	timer_hud.offset_bottom = 0.0
+	# TOP_LEFT here and BOTTOM_CENTRE in game-g2gfast, deliberately. A sandbox's
+	# centre-bottom is where the spawn menu and the tool prompts go, and a course in
+	# the corner of a building game is not the thing a player is staring at.
+	timer_hud.corner = DotTimerHud.Placement.TOP_LEFT
 	timer_hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(timer_hud)
 

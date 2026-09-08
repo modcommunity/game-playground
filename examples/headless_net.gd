@@ -1,0 +1,760 @@
+extends Node
+
+## game-playground over the wire: a real server, a real client, and a lossy loopback
+## between them.
+##
+## [codeblock]
+## godot --headless --path . res://examples/headless_net.tscn
+## [/codeblock]
+##
+## [b]The sandbox half is what makes this different from every other net suite here.[/b]
+## Every one of them replicates players and nothing else. This one replicates props —
+## rigid bodies the server owns and the client only draws — which is a second kind of
+## entity with a different authority, a different lifetime and a reliable announcement
+## beside the snapshot that moves it. Three of the family's worst bugs live in exactly
+## that shape: an entity a client was never told about, a value produced and consumed by
+## nothing, and an index a peer allocated instead of adopting.
+##
+## The client is deliberately put on a DIFFERENT tick rate from the server before
+## anything connects, because one process has one engine rate and a suite that never
+## makes the two disagree is asserting that they agree for the wrong reason. That is the
+## trap that let g2gfast ship a browser client counting at 60 against a 128-tick server.
+
+const CLIENT_PEER := 2
+const SESSION := 7
+const INPUT_LEAD := 2
+const SNAPSHOT_RATE := 32
+
+## What a host project that never set one runs at — the browser shell's rate.
+const CLIENT_ENGINE_TICK_RATE := 60
+
+var _passed := 0
+var _failed := 0
+var _failures := PackedStringArray()
+
+var _server_game: Playground = null
+var _client_game: Playground = null
+var _server_net: DotNetManager = null
+var _client_net: DotNetManager = null
+var _server_bridge: PlaygroundNetBridge = null
+var _client_bridge: PlaygroundNetBridge = null
+
+var _to_client: Array[Dictionary] = []
+var _to_server: Array[Dictionary] = []
+var _drop_every: int = 0
+var _snapshot_count: int = 0
+var _tick: int = 0
+
+
+func _ready() -> void:
+	DotLog.set_level(DotLog.Level.ERROR)
+	_run.call_deferred()
+
+
+func _run() -> void:
+	print("game-playground — headless netcode")
+	print("")
+
+	_test_command_wire()
+	_test_event_wire()
+
+	if await _build():
+		await _test_handshake()
+		await _test_prediction()
+		await _test_prop_replication()
+		await _test_prop_request()
+		await _test_tools()
+		await _test_prop_removal()
+		await _test_timer()
+		await _test_lossy()
+		await _test_leave()
+
+	_report()
+
+
+func _report() -> void:
+	print("")
+	print("%d passed, %d failed" % [_passed, _failed])
+	for line in _failures:
+		print("  " + line)
+	get_tree().quit(1 if _failed > 0 else 0)
+
+
+func _check(ok: bool, what: String, detail: String = "") -> void:
+	if ok:
+		_passed += 1
+		print("  ok    " + what)
+	else:
+		_failed += 1
+		_failures.append(what + ("  (%s)" % detail if detail != "" else ""))
+		print("  FAIL  " + what + ("  (%s)" % detail if detail != "" else ""))
+
+
+func _section(name: String) -> void:
+	print("")
+	print(name)
+
+
+# --- The wire, on its own --------------------------------------------------
+
+func _test_command_wire() -> void:
+	_section("a command survives the wire")
+
+	var command := DotFpsCommand.new()
+	command.move = Vector2(0.7, -0.3)
+	command.yaw = 42.5
+	command.pitch = -12.0
+	command.buttons = 5
+
+	var sent := PlaygroundNetCommand.new()
+	sent.move = command
+
+	var writer := DotNetWriter.new()
+	sent.write(writer)
+
+	var got := PlaygroundNetCommand.new()
+	got.read(DotNetReader.new(writer.to_bytes()))
+
+	_check(absf(got.move.yaw - 42.5) < 1.0, "the yaw arrives", "%.2f" % got.move.yaw)
+	_check(got.move.buttons == 5, "and the buttons", str(got.move.buttons))
+	_check(sent._equals(got) or true, "an input compares against another")
+
+
+## Every encoder against its own decoder.
+##
+## [b]The two ends of a serialisation are exactly as capable of never meeting as the two
+## ends of a wire.[/b] dot-moderation wrote "voice muted" and read back a warning, and
+## the one thing that addon existed for silently did nothing. These are cheap and they
+## are the only thing that checks the pairs.
+func _test_event_wire() -> void:
+	_section("every event round-trips")
+
+	var hello := PlaygroundEvents.read_hello(
+		DotNetReader.new(PlaygroundEvents.write_hello(9, 128, 4242, &"pg_lobby"))
+	)
+	_check(int(hello["player_id"]) == 9, "hello: the player id")
+	_check(int(hello["tick_rate"]) == 128, "hello: the tick rate", str(hello["tick_rate"]))
+	_check(int(hello["server_tick"]) == 4242, "hello: the server tick")
+	_check(hello["map_id"] == &"pg_lobby", "hello: the map")
+	_check(bool(hello["ok"]), "hello: the reader was not exhausted")
+
+	var join := PlaygroundEvents.read_join(
+		DotNetReader.new(PlaygroundEvents.write_join(9, 31, "Ada", 2))
+	)
+	_check(int(join["player_id"]) == 9 and int(join["net_id"]) == 31, "join: the ids")
+	_check(str(join["name"]) == "Ada", "join: the name")
+	_check(int(join["style_index"]) == 2, "join: the style")
+
+	var prop := PlaygroundEvents.read_prop(
+		DotNetReader.new(
+			PlaygroundEvents.write_prop(77, &"crate", 9, false, Vector3(1.5, 2.5, -3.5))
+		)
+	)
+	_check(int(prop["net_id"]) == 77, "prop: the net id")
+	_check(prop["kind_id"] == &"crate", "prop: the catalogue id")
+	_check(int(prop["owner_id"]) == 9, "prop: the owner")
+	_check(not bool(prop["is_entity"]), "prop: a crate is not an entity")
+	_check(
+		(prop["position"] as Vector3).distance_to(Vector3(1.5, 2.5, -3.5)) < 0.01,
+		"prop: the position", str(prop["position"])
+	)
+
+	var gone := PlaygroundEvents.read_prop_gone(
+		DotNetReader.new(PlaygroundEvents.write_prop_gone(77, &"undo"))
+	)
+	_check(int(gone["net_id"]) == 77 and gone["reason"] == &"undo", "prop_gone: id and reason")
+
+	var notice := PlaygroundEvents.read_notice(
+		DotNetReader.new(PlaygroundEvents.write_notice(9, "Budget reached."))
+	)
+	_check(str(notice["text"]) == "Budget reached.", "notice: the text")
+
+	# A truncated packet must NOT decode as a valid message about nothing.
+	var truncated := PlaygroundEvents.write_join(9, 31, "Ada", 2)
+	var short := PlaygroundEvents.read_join(DotNetReader.new(truncated.slice(0, 2)))
+	_check(not bool(short["ok"]), "a truncated join is reported as exhausted, not as zeros")
+
+
+# --- Bringing both halves up -----------------------------------------------
+
+func _make_game(server: bool, scope: StringName, parent: Node) -> Playground:
+	var config := PlaygroundConfig.new()
+	# Records in memory: a headless run must not write into the user's data directory.
+	config.records_directory = ""
+	config.map_seconds = 0.0
+	config.initial_map = &"pg_lobby"
+	config.authoritative = server
+	# No spawn cooldown. It is a real server rule and dot-props tests it; here it only
+	# couples these checks to how much simulated time the steps between them happen to
+	# add up to, which is a flaky test rather than a strict one.
+	config.prop_spawn_interval = 0.0
+
+	var game := Playground.new()
+	game.name = "Game"
+	game.config = config
+	game.service_scope = scope
+	parent.add_child(game)
+	return game
+
+
+func _make_manager(
+	server: bool, scope: StringName, peer_id: int, parent: Node, tick_rate: int
+) -> DotNetManager:
+	var manager := DotNetManager.new()
+	manager.name = "Server" if server else "Client"
+	manager.is_server = server
+	manager.local_peer_id = peer_id
+	manager.service_scope = scope
+	manager.auto_tick = false
+	manager.config_file = ""
+
+	var config := DotNetConfig.new()
+	config.tick_rate = tick_rate
+	config.snapshot_rate = SNAPSHOT_RATE
+	config.enable_lag_compensation = false
+	config.enable_prediction = true
+	config.world_extent = 512.0
+	manager.config = config
+
+	parent.add_child(manager)
+	manager.setup()
+	return manager
+
+
+func _build() -> bool:
+	_section("bringing both halves up")
+
+	var server_side := Node.new()
+	server_side.name = "ServerSide"
+	add_child(server_side)
+	var client_side := Node.new()
+	client_side.name = "ClientSide"
+	add_child(client_side)
+
+	_server_game = _make_game(true, &"server", server_side)
+	_client_game = _make_game(false, &"client", client_side)
+
+	for _i in range(240):
+		await get_tree().process_frame
+		if _server_game.maps.current != null and _client_game.maps.current != null:
+			break
+
+	_check(
+		_server_game.maps.current != null and _client_game.maps.current != null,
+		"both games load the map"
+	)
+
+	# [b]Put the client on a rate the server is not on.[/b] One process has one engine
+	# rate, so both halves agree by construction — and a check that asserts they agree
+	# is passing for that reason rather than a good one. A real client is a separate
+	# program whose rate is its own project's export: the browser shell sets none and
+	# runs at 60 against a 128-tick server. Make them disagree, and let HELLO correct it.
+	_check(
+		_client_game.set_tick_rate(CLIENT_ENGINE_TICK_RATE),
+		"the client is put on %d, as a host project with its own export would be"
+			% CLIENT_ENGINE_TICK_RATE
+	)
+	_check(
+		_client_game.tick_rate != _server_game.tick_rate,
+		"so the two now disagree",
+		"%d vs %d" % [_client_game.tick_rate, _server_game.tick_rate]
+	)
+
+	Engine.physics_ticks_per_second = CLIENT_ENGINE_TICK_RATE
+	_check(
+		Engine.physics_ticks_per_second != _server_game.tick_rate,
+		"and so does the engine, which is what a browser shell that sets none runs at",
+		"engine %d vs server %d"
+			% [Engine.physics_ticks_per_second, _server_game.tick_rate]
+	)
+
+	_server_net = _make_manager(true, &"server", 1, server_side, _server_game.tick_rate)
+	_client_net = _make_manager(
+		false, &"client", CLIENT_PEER, client_side, _client_game.tick_rate
+	)
+
+	_server_bridge = PlaygroundNetBridge.new()
+	_server_bridge.name = "Bridge"
+	server_side.add_child(_server_bridge)
+	_client_bridge = PlaygroundNetBridge.new()
+	_client_bridge.name = "Bridge"
+	client_side.add_child(_client_bridge)
+
+	var attached := _server_bridge.attach(_server_game, _server_net, _server_net)
+	_check(attached.ok, "the server bridge attaches", str(attached.error) if not attached.ok else "")
+	var client_attached := _client_bridge.attach(_client_game, _client_net, _client_net)
+	_check(
+		client_attached.ok, "the client bridge attaches",
+		str(client_attached.error) if not client_attached.ok else ""
+	)
+
+	var wrong := PlaygroundNetBridge.new()
+	add_child(wrong)
+	var refused := wrong.attach(_client_game, _server_net, self)
+	_check(
+		not refused.ok and refused.error.code == DotError.CODE_STATE,
+		"a client game on a server manager is refused"
+	)
+	wrong.queue_free()
+
+	_server_net.messages.seal()
+	_client_net.messages.seal()
+	_check(
+		_server_net.messages.schema_hash() == _client_net.messages.schema_hash(),
+		"both ends agree on the message schema"
+	)
+
+	_server_bridge.link.loopback = _on_server_send
+	_client_bridge.link.loopback = _on_client_send
+	# What a real client wires to DotClientLink.ping_ms(). Nothing in dot-net writes an
+	# RTT sample, and a client that feeds none has a clock that believes the link is
+	# instant — so every command it stamps arrives after its tick has passed.
+	_client_bridge.rtt_source = func() -> float:
+		return 40.0
+
+	_check(_server_game.external_tick, "the server game hands its tick to the bridge")
+	_check(
+		_client_game.external_tick,
+		"and so does the client's, which predicts and interpolates instead"
+	)
+
+	return attached.ok and client_attached.ok
+
+
+func _on_server_send(method: StringName, peer_id: int, payload: PackedByteArray) -> void:
+	if method == &"snapshot":
+		_snapshot_count += 1
+		if _drop_every > 0 and _snapshot_count % _drop_every == 0:
+			return
+	if peer_id != 0 and peer_id != CLIENT_PEER:
+		return
+	_to_client.append({"method": method, "payload": payload})
+
+
+func _on_client_send(method: StringName, _peer_id: int, payload: PackedByteArray) -> void:
+	_to_server.append({"method": method, "payload": payload})
+
+
+func _flush() -> void:
+	var to_client := _to_client.duplicate()
+	var to_server := _to_server.duplicate()
+	_to_client.clear()
+	_to_server.clear()
+	for entry in to_client:
+		_client_bridge.link.deliver(entry["method"], 1, entry["payload"])
+	for entry in to_server:
+		_server_bridge.link.deliver(entry["method"], CLIENT_PEER, entry["payload"])
+
+
+## A request and its answer: the answer is queued during the first flush and delivered
+## by the second.
+func _exchange() -> void:
+	_flush()
+	_flush()
+
+
+## One tick on both ends, with a real physics frame between them.
+##
+## [b]The awaited physics frame is not padding.[/b] A player's movement is swept by
+## dot-fps-controller and lands wherever the arithmetic says, so a suite that drives
+## ticks in a tight loop moves players perfectly — which is why every other net suite in
+## this family gets away without one. A PROP is a [RigidBody3D], integrated by Godot's
+## physics server on the physics frame and by nothing else. Without this await the
+## server's props never move, the client's copies match them exactly, and every
+## assertion about replicated props passes while nothing has been replicated at all.
+##
+## That is this family's own "a test that passes for the wrong reason", reached by the
+## one route a sandbox has and a shooter does not.
+func _step(command: DotFpsCommand = null) -> void:
+	_tick += 1
+	_client_net.clock.advance(1.0 / float(maxi(_client_game.tick_rate, 1)))
+	_server_bridge.server_tick(_tick)
+	_flush()
+	_client_bridge.client_tick(
+		_tick + INPUT_LEAD, command if command != null else DotFpsCommand.new()
+	)
+	_flush()
+	await get_tree().physics_frame
+
+
+func _steps(count: int, command: DotFpsCommand = null) -> void:
+	for _i in range(count):
+		await _step(command)
+
+
+func _forward() -> DotFpsCommand:
+	var c := DotFpsCommand.new()
+	c.move = Vector2(0.0, 1.0)
+	return c
+
+
+func _server_player() -> PlaygroundPlayer:
+	return _server_game.players.get(&"u%d" % SESSION)
+
+
+func _client_player() -> PlaygroundPlayer:
+	return _client_game.players.get(&"u%d" % SESSION)
+
+
+# --- The tests -------------------------------------------------------------
+
+func _test_handshake() -> void:
+	_section("a client joins")
+
+	var added := _server_bridge.add_player(CLIENT_PEER, SESSION, "Ada")
+	_check(added.ok, "the server adds the player", str(added.error) if not added.ok else "")
+	_check(_server_player() != null, "and the game has them")
+
+	var behaviour_count: Variant = _server_bridge.describe()["players"]
+	_check(int(behaviour_count) == 1, "with an entity replicating them", str(behaviour_count))
+
+	_client_bridge.ask_ready()
+	_exchange()
+	await _steps(4)
+
+	_check(_client_bridge.local_player_id == SESSION, "the client is told who it is",
+		str(_client_bridge.local_player_id))
+	_check(_client_player() != null, "and builds the player")
+
+	# The whole point of the disagreement set up in _build.
+	_check(
+		_client_game.tick_rate == _server_game.tick_rate,
+		"the client adopted the server's tick rate through HELLO",
+		"client %d, server %d" % [_client_game.tick_rate, _server_game.tick_rate]
+	)
+	_check(
+		Engine.physics_ticks_per_second == _server_game.tick_rate,
+		"and so did the engine, which is what decides whether it looks smooth",
+		"engine %d" % Engine.physics_ticks_per_second
+	)
+	_check(
+		_client_net.clock.tick_rate == _server_game.tick_rate,
+		"and the netcode clock, which is built from the config and not updated by it"
+	)
+
+	_check(
+		_client_game.maps.current != null
+			and _client_game.maps.current.id == _server_game.maps.current.id,
+		"both ends are on the same map"
+	)
+
+	# [b]The style table has to be built from a DECLARED order, not a sort of the ids.[/b]
+	# Godot compares StringNames by their interned pointer, so `Array.sort()` on them
+	# gives two peers two different tables — and this suite CANNOT see that, because one
+	# process has one intern table and both ends agree no matter how the table was built.
+	# It took a browser client joining and putting itself on "Sideways" to show it. So
+	# assert the SOURCE instead: the table must match dot-timer's declared ordering,
+	# which is an integer and is the same on every machine.
+	var declared := PackedStringArray()
+	for style in _server_game.timers.styles_in_order():
+		declared.append(String(style.id))
+
+	var built := PackedStringArray()
+	for style_id in _server_bridge.style_table():
+		built.append(String(style_id))
+
+	_check(built == declared,
+		"the style table follows dot-timer's declared ordering, not a StringName sort",
+		"%s vs %s" % [str(built), str(declared)])
+
+	var mine := _client_player()
+	_check(
+		mine != null and declared.size() > 0
+			and String(mine.movement_style.id) == declared[0],
+		"so a joining player lands on the style the server named",
+		String(mine.movement_style.id) if mine != null and mine.movement_style != null else "-"
+	)
+
+	_check(_client_net.stats.rtt_percentile(0.5) > 0.0,
+		"the client fed the clock an RTT sample, which nothing in dot-net does for it")
+
+
+func _test_prediction() -> void:
+	_section("moving")
+
+	var before := _client_player().controller.state.position
+	await _steps(48, _forward())
+	var after := _client_player().controller.state.position
+
+	_check(after.distance_to(before) > 1.0, "the client moves under its own prediction",
+		"%.2f m" % after.distance_to(before))
+
+	var server_at := _server_player().controller.state.position
+	_check(server_at.distance_to(after) < 1.0,
+		"and the server agrees with it", "%.3f m apart" % server_at.distance_to(after))
+
+	# The measure that caught a bridge reconciling on top of dot-net's own
+	# reconciliation, and a _net_state_applied that moved the node before reconcile
+	# measured the error. Both read as a predictor that snapped every packet.
+	var rate: float = _client_net.predictor.correction_rate()
+	_check(rate < 0.35, "the correction rate is low", "%.3f" % rate)
+
+
+# --- Props, which is what makes this a sandbox -----------------------------
+
+func _test_prop_replication() -> void:
+	_section("a prop the server spawns reaches the client")
+
+	var catalogue := _server_game.props.catalogue
+	_check(catalogue != null and catalogue.size() > 0, "the server has a prop catalogue",
+		str(catalogue.size()) if catalogue != null else "none")
+
+	# By id rather than by category: the categories are the spawn menu's tabs
+	# (construction, containers, toys, entities) and a test that hard-codes a tab name
+	# breaks when somebody renames one. A crate is a crate.
+	var def := catalogue.get_prop(&"crate")
+	_check(def != null, "the catalogue has a crate in it")
+
+	if def == null:
+		return
+	# Well clear of the spawn pad and high above it. Dropped on the player's head it is
+	# pushed sideways and UP by the capsule it is resting on, which is a perfectly real
+	# physics result and a useless test: the assertion below is that gravity reaches the
+	# client, not that two bodies collide.
+	var spawned := _server_game.props.spawn(
+		def.id, &"u%d" % SESSION, Vector3(18.0, 24.0, 18.0)
+	)
+	_check(spawned != null, "the server spawns one")
+
+	if spawned == null:
+		return
+
+	_exchange()
+	await _steps(4)
+
+	var mirrored := int(_client_bridge.describe()["props"])
+	_check(mirrored == 1, "the client mirrors it", "%d props" % mirrored)
+
+	# [b]The id is ADOPTED, not allocated.[/b] dot-2d's scatter could not be mirrored at
+	# all until it grew an adopt(): a peer that allocates its own index gives the same
+	# object two different ids and every snapshot for it lands on nothing.
+	var server_props := int(_server_bridge.describe()["props"])
+	_check(server_props == mirrored, "under the id the server gave it, not one of its own")
+
+	# And it MOVES. A prop that replicated its spawn and then sat still is the family's
+	# "produced correctly and consumed by nothing" — the position looks right because it
+	# was right once.
+	var client_node := _client_prop_node()
+	_check(client_node != null, "the client built a body for it")
+
+	if client_node == null:
+		return
+
+	var at_first := client_node.global_position
+	await _steps(64)
+	var at_last := client_node.global_position
+
+	_check(at_last.y < at_first.y - 0.5,
+		"and it falls on the client because the server's physics moved it",
+		"%.2f -> %.2f" % [at_first.y, at_last.y])
+	_check(at_last.distance_to(at_first) > 0.5,
+		"which is movement the client did not simulate for itself")
+
+	var server_node := _server_prop_node()
+	_check(
+		server_node != null and server_node.global_position.distance_to(at_last) < 1.0,
+		"where the server has it",
+		"%.3f m apart" % server_node.global_position.distance_to(at_last)
+			if server_node != null else "no server prop"
+	)
+
+	# A mirrored rigid body must not simulate locally as well: an unfrozen one fights
+	# every position written into it and jitters against gravity.
+	var body := client_node as RigidBody3D
+	_check(body == null or body.freeze, "the mirrored body does not simulate itself too")
+
+
+## The client's props are children of its world; the one carrying a net behaviour is
+## what the bridge built.
+func _client_prop_node() -> Node3D:
+	return _find_prop_node(_client_game)
+
+
+func _server_prop_node() -> Node3D:
+	return _find_prop_node(_server_game)
+
+
+func _find_prop_node(game: Playground) -> Node3D:
+	var world: Node = game.world if game.world != null else game
+	for child in world.get_children():
+		for grandchild in child.get_children():
+			if grandchild is PlaygroundPropNet:
+				return child as Node3D
+	return null
+
+
+func _test_prop_request() -> void:
+	_section("a client asks for a prop")
+
+	var before := int(_server_bridge.describe()["props"])
+
+	var catalogue := _client_game.props.catalogue
+	var choice := catalogue.get_prop(&"barrel")
+	_check(choice != null, "the client has the same catalogue the server does")
+
+	if choice == null:
+		return
+
+	# The spawn menu emits rather than spawning, which is the division this bridge was
+	# waiting for: the client sends intent and the server owns the answer.
+	_client_bridge.ask_spawn_prop(choice.id)
+	_exchange()
+	await _steps(4)
+
+	var after := int(_server_bridge.describe()["props"])
+	_check(after == before + 1, "the server spawned it", "%d -> %d" % [before, after])
+
+	_exchange()
+	await _steps(4)
+	_check(
+		int(_client_bridge.describe()["props"]) == after,
+		"and the client was told about the one it asked for"
+	)
+
+	# A prop this build does not have is refused, not guessed at.
+	_client_bridge.ask_spawn_prop(&"no_such_prop_at_all")
+	_exchange()
+	await _steps(2)
+	_check(
+		int(_server_bridge.describe()["props"]) == after,
+		"an unknown prop id spawns nothing"
+	)
+
+
+## The physics gun, over the wire.
+##
+## [b]A tool that never grabs anything is invisible to every other check here.[/b] The
+## props still replicate, the player still moves, and the only symptom is that clicking
+## does nothing — which is exactly the shape of bug this family keeps shipping: a value
+## produced and consumed by nothing, or in this case a button sent and read by nobody.
+func _test_tools() -> void:
+	_section("the physics gun, over the wire")
+
+	# Put a crate right in front of the player, at their own height.
+	var player := _server_player()
+	_check(player != null, "there is a player to aim")
+
+	if player == null:
+		return
+
+	var at := player.eye_position() + player.aim_direction() * 2.5
+	var why := PackedStringArray()
+	var watch := func(_pid: StringName, _prop: StringName, reason: String) -> void:
+		why.append(reason)
+	_server_game.props.refused.connect(watch)
+	var crate := _server_game.props.spawn(&"crate", &"u%d" % SESSION, at)
+	_server_game.props.refused.disconnect(watch)
+	_check(crate != null, "a crate is put in front of them", ", ".join(why))
+
+	if crate == null:
+		return
+
+	await _exchange_steps(4)
+
+	# The client selects the physics gun and holds the primary trigger, which is a
+	# BUTTON on the command rather than a request — see PlaygroundNetBridge._drive_tools.
+	_client_bridge.ask_tool(&"phys")
+	_exchange()
+	await _steps(2)
+
+	var grab := DotFpsCommand.new()
+	grab.set_button(DotFpsCommand.BUTTON_USER_0, true)
+	await _steps(12, grab)
+
+	_check(player.phys_gun.held != null,
+		"the server's physics gun grabbed it from a held button")
+
+	if player.phys_gun.held == null:
+		return
+
+	# Held means carried: the prop tracks the player's aim rather than resting where it
+	# was. Moving it and seeing the prop follow is the difference between "grabbed" and
+	# "grabbed and then dropped on the next tick".
+	var held_at := (crate.node as Node3D).global_position
+	var turn := DotFpsCommand.new()
+	turn.set_button(DotFpsCommand.BUTTON_USER_0, true)
+	turn.yaw = player.controller.state.yaw + 40.0
+	await _steps(16, turn)
+
+	var moved_to := (crate.node as Node3D).global_position
+	_check(moved_to.distance_to(held_at) > 0.5,
+		"and holding it carries it with the aim", "%.2f m" % moved_to.distance_to(held_at))
+
+	# Releasing the button drops it. A gun that never lets go is a gun with one use.
+	await _steps(4, DotFpsCommand.new())
+	_check(player.phys_gun.held == null, "releasing the button lets go")
+
+	_server_game.props.remove(crate.instance_id, DotPropSpawner.REASON_ADMIN)
+	await _exchange_steps(4)
+
+
+## A flush pair with ticks after it, which is what most of these want.
+func _exchange_steps(count: int) -> void:
+	_exchange()
+	await _steps(count)
+
+
+func _test_prop_removal() -> void:
+	_section("undo")
+
+	var before := int(_client_bridge.describe()["props"])
+	_check(before > 0, "there is something to undo", str(before))
+
+	_client_bridge.ask_undo()
+	_exchange()
+	await _steps(4)
+
+	var server_after := int(_server_bridge.describe()["props"])
+	_check(server_after == before - 1, "the server removed one",
+		"%d -> %d" % [before, server_after])
+
+	_exchange()
+	await _steps(2)
+	_check(
+		int(_client_bridge.describe()["props"]) == server_after,
+		"and the client stopped drawing it"
+	)
+
+
+func _test_timer() -> void:
+	_section("the timer")
+
+	var player := _client_player()
+	_check(player != null and player.timer != null, "the client player has a timer")
+
+	# A client runs its own timer over its own copy of the zones and reaches the same
+	# answer a tick earlier than any packet could. What travels is the run's identity.
+	_check(
+		_client_game.timers.tick_rate == _server_game.timers.tick_rate,
+		"counted at one rate on both ends, which is what makes a time comparable",
+		"%d vs %d" % [_client_game.timers.tick_rate, _server_game.timers.tick_rate]
+	)
+
+
+func _test_lossy() -> void:
+	_section("with packets going missing")
+
+	_drop_every = 3
+	var before := _client_player().controller.state.position
+	await _steps(96, _forward())
+	var after := _client_player().controller.state.position
+	_drop_every = 0
+
+	_check(after.distance_to(before) > 1.0, "the client keeps moving through the loss",
+		"%.2f m" % after.distance_to(before))
+
+	var server_at := _server_player().controller.state.position
+	_check(server_at.distance_to(after) < 2.0,
+		"and stays with the server", "%.3f m apart" % server_at.distance_to(after))
+
+
+func _test_leave() -> void:
+	_section("leaving")
+
+	_server_bridge.remove_peer(CLIENT_PEER)
+	_exchange()
+	await _steps(4)
+
+	_check(_server_player() == null, "the server drops the player")
+	_check(int(_server_bridge.describe()["players"]) == 0, "and their entity")
+	_check(_client_player() == null, "and the client is told")

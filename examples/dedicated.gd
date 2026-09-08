@@ -43,6 +43,7 @@ func _run() -> void:
 		_test_zone_workflow()
 		_test_prop_commands()
 		_test_permissions()
+		_test_disconnect_is_handled()
 		await _test_module_unloads_cleanly()
 
 	print("")
@@ -472,6 +473,39 @@ func _test_permissions() -> void:
 	_check(
 		clear_cmd != null and clear_cmd.permission == DotAdminFlags.GENERIC,
 		"and clearing everybody's props is an admin action"
+	)
+
+
+## A disconnect actually reaches the module.
+##
+## [b]This is an ARITY check dressed as a behaviour check, and it is the only kind that
+## could have caught what it caught.[/b] `DotServer.client_disconnected` emits
+## `(session, reason)` and the handler took only the session, so Godot refused every call
+## — "Method expected 1 argument(s), but called with 2" — and the handler never ran. No
+## player was removed, no peer released, and the server kept building snapshots for
+## clients that had gone, three engine errors a tick, for ever.
+##
+## Nothing here had ever disconnected: every other test in this file adds its players
+## directly and the module is torn down at the end. So the bug needed a real browser
+## client to show, and this is the check that means it will not need one again.
+func _test_disconnect_is_handled() -> void:
+	print("a client disconnecting reaches the module")
+
+	var session := DotClientSession.new()
+	session.userid = 4242
+	session.peer_id = 0
+	session.display_name = "Leaver"
+
+	game.add_player(&"u4242", "Leaver")
+	_check(game.players.has(&"u4242"), "a player is in the game")
+
+	# Emitted with BOTH arguments, exactly as DotServer emits it. A handler with the
+	# wrong arity is refused by the engine rather than adapted to.
+	server.client_disconnected.emit(session, "closed")
+
+	_check(
+		not game.players.has(&"u4242"),
+		"and the disconnect took them back out again"
 	)
 
 

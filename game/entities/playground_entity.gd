@@ -40,6 +40,19 @@ var instance: DotPropInstance = null
 ## in wall time would move at a different speed on a server under load.
 var age: float = 0.0
 
+## This entity as dot-npc sees it: what it can perceive and what it has committed to.
+##
+## [b]Built here rather than spawned by a [DotNpcSpawner], and that is deliberate.[/b]
+## An entity in this game is a PROP first: it counts against a budget, it can be undone,
+## it is cleaned up when its owner leaves, a physics gun can pick it up and a gravity gun
+## can punt it across the map. An NPC you cannot pick up is the one thing a sandbox
+## player will try first, so moving these onto dot-npc's spawner would have taken all of
+## that away to gain a second population system this game does not need.
+##
+## What dot-npc [i]does[/i] own here is the half that was wrong: perception. See
+## [member Playground.npc_senses].
+var npc: DotNpcInstance = null
+
 
 # --- Called by Playground ---------------------------------------------------
 
@@ -51,7 +64,38 @@ var age: float = 0.0
 func bind(p_game: Playground, p_instance: DotPropInstance) -> void:
 	game = p_game
 	instance = p_instance
+	npc = _make_npc()
 	_entity_ready()
+
+
+## This entity's dot-npc row, built from its catalogue entry.
+##
+## The perception envelope comes out of `meta`, so it is a line in the catalogue an
+## operator can edit rather than a constant in a script — the same reason
+## [method tune] exists, applied to the half of an NPC that decides who it goes after.
+func _make_npc() -> DotNpcInstance:
+	var npc_def := DotNpcDef.make(
+		def.id if def != null else &"entity", def.scene_path if def != null else ""
+	)
+
+	npc_def.faction = StringName(tune_string(&"faction", "npc"))
+	npc_def.sight_range = tune(&"sight", 30.0)
+	npc_def.sight_half_angle_deg = tune(&"sight_angle", 180.0)
+	npc_def.hearing_range = tune(&"hearing", 10.0)
+
+	# Off by default in a sandbox. A line-of-sight raycast per candidate per NPC at the
+	# 128 Hz this game runs at is the most expensive thing an NPC layer can do, and
+	# nobody hides from a toy. A catalogue entry that wants it says so.
+	npc_def.require_line_of_sight = tune(&"line_of_sight", 0.0) > 0.0
+
+	var row := DotNpcInstance.new()
+	row.def = npc_def
+	row.node = self
+	row.instance_id = get_instance_id()
+	row.owner_id = instance.owner_id if instance != null else &""
+	row.health = npc_def.max_health
+
+	return row
 
 
 ## One simulated tick. Called by [Playground], at the game's tick rate.
@@ -95,6 +139,55 @@ func tune(key: StringName, fallback: float) -> float:
 	var raw: Variant = def.meta.get(String(key), null)
 
 	return float(raw) if raw is float or raw is int else fallback
+
+
+## The player this entity has committed to, or null.
+##
+## [b]This is the port, and it is the whole reason dot-npc is installed here.[/b] The
+## chaser used to call [method nearest_player] on every tick, which is the classic broken
+## NPC: two players a metre apart make it turn back and forth for ever, and one who steps
+## behind a pillar makes it forget instantly and walk away mid-swing. [DotNpcSenses]
+## acquires at one threshold, drops at a weaker one, and keeps chasing for a grace period
+## measured from the last sighting rather than from acquisition.
+##
+## [method nearest_player] is still here and still correct for what it says: the spinner
+## wants the nearest thing and has no opinions about it. A committed target is what a
+## chaser wants.
+func target() -> PlaygroundPlayer:
+	if game == null or npc == null or game.npc_senses == null:
+		return null
+
+	var id := game.npc_senses.update_target(
+		npc, game.npc_candidates, age, game.npc_candidates.size()
+	)
+
+	if id == &"":
+		return null
+
+	var found: Variant = game.players.get(id)
+
+	# A target that has left. Cleared here rather than left for the grace period to
+	# expire, because a disconnected player has no position and steering at their last
+	# one walks the NPC to an empty corner for two and a half seconds.
+	if not (found is PlaygroundPlayer):
+		npc.target_id = &""
+		return null
+
+	return found
+
+
+## A tuning STRING from the definition's `meta`, or [param fallback].
+##
+## Beside [method tune] rather than folded into it: a faction is a name and a speed is a
+## number, and one accessor returning a Variant would put the type check at every call
+## site instead of here.
+func tune_string(key: StringName, fallback: String = "") -> String:
+	if def == null:
+		return fallback
+
+	var raw: Variant = def.meta.get(String(key), null)
+
+	return str(raw) if raw is String or raw is StringName else fallback
 
 
 ## The closest player, or null when nobody is in the world.

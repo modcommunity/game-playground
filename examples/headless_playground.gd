@@ -879,6 +879,98 @@ func _test_props_are_built_from_their_definitions() -> void:
 	playground.props.clear_all(DotPropSpawner.REASON_ADMIN)
 
 
+## The chaser goes through dot-npc's perception, not "the nearest player this tick".
+##
+## [b]Every check here fails on the version this replaced.[/b] The old chaser called
+## `nearest_player()` on every one of the 128 ticks a second this game runs at, and both
+## of the failures below are what that produces: two players a metre apart make it turn
+## back and forth for ever, and one who steps out of range makes it forget mid-stride.
+##
+## Driven by hand rather than by letting the simulation run, because the thing being
+## tested is the decision and not the walking — and a suite that moved real players
+## around would be measuring the movement code.
+func _test_a_chaser_commits(playground: Playground) -> void:
+	var at := Vector3(0.0, 2.0, 0.0)
+	var spawned := playground.props.spawn(&"npc_chaser", &"bot", at)
+
+	if spawned == null:
+		_check(false, "a chaser spawns for the commitment check")
+		return
+
+	var chaser := spawned.node as PlaygroundEntity
+
+	_check(chaser.npc != null, "an entity has a dot-npc row")
+	_check(
+		chaser.npc.def.sight_range == 40.0,
+		"whose perception comes from the catalogue rather than from the script",
+		"%.0f m" % chaser.npc.def.sight_range
+	)
+
+	# Two candidates a fraction of a metre apart, swapping which is marginally nearer
+	# every tick. This is the shape the old chaser flickered on.
+	var near := DotNpcSenses.Candidate.new(&"one", Vector3(0, 2, -10), &"player")
+	var also := DotNpcSenses.Candidate.new(&"two", Vector3(0, 2, -10.4), &"player")
+
+	playground.npc_candidates = [near, also]
+
+	var first := playground.npc_senses.update_target(
+		chaser.npc, playground.npc_candidates, 0.0, 8
+	)
+	var switches := 0
+	var last := first
+
+	for tick in 40:
+		near.position = Vector3(0, 2, -10.0 - (0.5 if tick % 2 == 0 else 0.0))
+		also.position = Vector3(0, 2, -10.0 - (0.0 if tick % 2 == 0 else 0.5))
+
+		var now := playground.npc_senses.update_target(
+			chaser.npc, playground.npc_candidates, float(tick) * 0.1, 8
+		)
+
+		if now != last:
+			switches += 1
+
+		last = now
+
+	_check(first != &"", "a chaser commits to somebody")
+	_check(
+		switches == 0,
+		"and does not flicker between two players standing together",
+		"%d switches in 40 ticks; the old chaser switched on most of them" % switches
+	)
+
+	# The target walks out of sight. The chaser must keep going for the grace period
+	# rather than turning away mid-stride.
+	playground.npc_candidates = []
+
+	_check(
+		playground.npc_senses.update_target(chaser.npc, [], 5.0, 8) != &"",
+		"and keeps chasing one that stepped out of sight",
+		"a doorway would otherwise be a perfect escape"
+	)
+	_check(
+		playground.npc_senses.update_target(chaser.npc, [], 20.0, 8) == &"",
+		"and gives up once the grace has expired"
+	)
+
+	# A target that disconnects. The grace would otherwise walk the NPC to an empty
+	# corner for two and a half seconds, steering at a position nobody is at.
+	playground.npc_candidates = [
+		DotNpcSenses.Candidate.new(&"ghost", Vector3(0, 2, -6), &"player")
+	]
+	playground.npc_senses.update_target(chaser.npc, playground.npc_candidates, 21.0, 8)
+
+	_check(chaser.npc.target_id == &"ghost", "a chaser can commit to anybody it sees")
+	_check(
+		chaser.target() == null and chaser.npc.target_id == &"",
+		"and drops one that is not a player in this game any more",
+		"or it walks to an empty corner for the whole grace period"
+	)
+
+	playground.props.remove(spawned.instance_id)
+	playground.npc_candidates = []
+
+
 ## An entity is a prop with a script, and the script is loaded by path.
 ##
 ## [b]This is the whole "spawning things that carry code" mechanism.[/b] The scene is a
@@ -1000,6 +1092,8 @@ func _test_entities_run_their_scripts() -> void:
 			"and walks toward the player",
 			"%.1f m -> %.1f m" % [opening, closing]
 		)
+
+	_test_a_chaser_commits(playground)
 
 	# A definition whose script is missing does not leave a body in the world. One
 	# that did would sit there being a crate, which is indistinguishable from an NPC

@@ -12,7 +12,7 @@ each addon's own `CLAUDE.md` before working in it. This file is only about the j
 
 ## What this project is for
 
-**It is the only place dot-fps-controller, dot-timer, dot-map, dot-props and
+**It is the only place dot-fps-controller, dot-timer, dot-map, dot-props, dot-npc and
 dot-leaderboard run together**, and by the family's own repeated lesson that is where
 everything is found. Every one of those addons has a suite, every suite passes with
 the others absent, and that proves very little: the bugs that have cost days here were
@@ -302,6 +302,47 @@ fixed rate. Not `_process`, which would make an NPC's speed a function of the fr
 rate; not after the players, which would leave a chaser visibly a tick behind its
 target at exactly the rate the server ticks.
 
+### Perception is dot-npc's; being a prop is still dot-props'
+
+The entities were ported onto **dot-npc** for the half they were getting wrong, and
+deliberately *not* onto its spawner.
+
+**What moved.** The chaser called `nearest_player()` on every one of the 128 ticks a
+second this game runs at. That is the classic broken NPC and both of its failures are
+reachable in a sandbox in about ten seconds: two players standing a metre apart make it
+turn back and forth for ever, and one who steps out of range makes it forget instantly
+and walk away mid-stride. `DotNpcSenses` acquires at one threshold, drops at a weaker
+one, and keeps chasing for a grace period measured from the **last sighting** rather
+than from acquisition. `PlaygroundEntity.target()` is the whole interface;
+`nearest_player()` is still there and still correct for what it says, which is what the
+spinner wants.
+
+The perception envelope is a catalogue field — `sight`, `sight_angle`, `hearing`,
+`line_of_sight` in `meta` — for the reason `tune` exists. It replaced a `give_up_range`
+the chaser applied by hand, and giving up is now what happens when a target leaves the
+envelope and the grace expires.
+
+**What did not move, and why.** An entity here is a `DotPropInstance` first: it counts
+against a prop budget, it can be undone, it goes when its owner leaves, a physics gun
+can pick it up and a gravity gun can punt it across the map. Spawning these through
+`DotNpcSpawner` would have taken all of that away in exchange for a second population
+system this game does not need. **An NPC you cannot pick up is the first thing a sandbox
+player will try.** So dot-npc is installed here for its senses and its instance row, and
+`dot-npc-ai` and `dot-npc-ai-director` are not installed at all — a sandbox has no
+pacing to direct.
+
+**The candidate list is built once per tick, before the entities run.** Once per tick
+and not once per entity, because twenty NPCs each building their own list of eight
+players is a hundred and sixty allocations a tick for a list that does not differ
+between them. Before rather than after, because a list built at the end of a tick is a
+list of where everybody *was*, which is the one-tick lag the entity ordering already
+exists to avoid.
+
+**A target who disconnects is dropped immediately** rather than being left to the grace
+period. The grace exists so a doorway is not a perfect escape; a player who has left has
+no position at all, and steering at their last one walks the NPC into an empty corner for
+two and a half seconds.
+
 ### A weapon is a script too, and it is not in the prop catalogue
 
 Same mechanism, different registry. `PlaygroundWeapons.make` loads a path, instantiates
@@ -542,8 +583,9 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
     godot --headless --path . --check-only --script "res://${f#./}"
 done
 godot --headless --path . --script tools/export_zones.gd
-godot --headless --path . res://examples/headless_playground.tscn   # 183 checks
-godot --headless --path . res://examples/dedicated.tscn             # 57 checks
+godot --headless --path . res://examples/headless_playground.tscn   # 195 checks
+godot --headless --path . res://examples/headless_net.tscn          # 73 checks
+godot --headless --path . res://examples/dedicated.tscn             # 59 checks
 ```
 
 **Run the check-only pass first.** A script that fails to parse makes the scene fail

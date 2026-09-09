@@ -169,7 +169,19 @@ static func catalogue() -> DotPropCatalogue:
 		[&"npc_wanderer", "Wanderer", "npc_wanderer", Vector3(0.8, 1.7, 0.8),
 			"5d8fb8", 70.0, 3, {}],
 		[&"npc_chaser", "Chaser", "npc_chaser", Vector3(0.9, 1.8, 0.9),
-			"b8565d", 80.0, 4, {"speed": 5.0, "give_up_range": 40.0}],
+			"b8565d", 80.0, 4,
+			{
+				"speed": 5.0,
+				# The perception envelope, read by dot-npc through
+				# `PlaygroundEntity._make_npc`. `sight` replaced a `give_up_range` that
+				# the chaser applied by hand: giving up is now what happens when a
+				# target leaves the envelope and the commitment grace expires, which
+				# also gets the hysteresis and the memory that the hand-rolled version
+				# never had.
+				"sight": 40.0,
+				"sight_angle": 150.0,
+				"hearing": 14.0,
+			}],
 		[&"npc_hopper", "Hopper", "npc_wanderer", Vector3(0.7, 0.9, 0.7),
 			"6fae7a", 30.0, 2, {"speed": 2.5, "hop": 4.5, "turn_seconds": 1.2}],
 		[&"turret_spinner", "Spinner", "npc_spinner", Vector3(1.6, 0.5, 1.6),

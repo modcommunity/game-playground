@@ -112,6 +112,28 @@ var boards: DotLeaderboardManager = null
 ## an NPC, a hundred and twenty-eight times a second.
 var entities: Array[PlaygroundEntity] = []
 
+## What the entities can perceive, shared by all of them.
+##
+## [b]dot-npc's, rather than "the nearest player" recomputed every tick.[/b] The chaser
+## used to ask [method PlaygroundEntity.nearest_player] on every one of the hundred and
+## twenty-eight ticks a second this game runs at, which is the classic broken NPC: two
+## players standing a metre apart make it turn back and forth for ever, and one who steps
+## behind a pillar makes it forget instantly and walk away mid-swing.
+## [DotNpcSenses] acquires at one threshold and drops at a weaker one, with a grace
+## measured from the last sighting.
+##
+## One object for the whole world, because its tuning is the world's rather than an
+## NPC's: how far a particular thing can see belongs on its catalogue entry, and that is
+## where it is.
+var npc_senses: DotNpcSenses = null
+
+## The players as [DotNpcSenses.Candidate]s, rebuilt once per simulated tick.
+##
+## Once per tick and not once per entity: twenty NPCs each building their own list of
+## eight players is a hundred and sixty allocations a tick for one list that does not
+## differ between them.
+var npc_candidates: Array = []
+
 ## What a player may hold. See [PlaygroundWeapons].
 var weapons: Array[PlaygroundWeaponDef] = []
 
@@ -171,6 +193,7 @@ func _ready() -> void:
 	_build_leaderboards()
 	_build_timers()
 	_build_props()
+	_build_npc_senses()
 	_build_maps()
 
 	# Physics ticks drive everything. Not _process: a timer sampled per frame counts
@@ -248,6 +271,13 @@ func _physics_process(delta: float) -> void:
 func _simulate_tick(step: float) -> void:
 	props.advance(step)
 	maps.advance(step)
+
+	# What the entities can see, rebuilt before any of them thinks about it.
+	#
+	# Before, not after: a candidate list built at the end of a tick is a list of where
+	# everybody was, and a chaser steering at last tick's position lags its target by
+	# exactly one tick — which is the thing the ordering below already exists to avoid.
+	_rebuild_npc_candidates()
 
 	# Entities before players, for the same reason the timer runs after them: an NPC
 	# that moved after the player was moved would be a tick behind everything that
@@ -514,6 +544,38 @@ func _configure_entity(prop: DotPropInstance) -> void:
 	entity.bind(self, prop)
 
 	entities.append(entity)
+
+
+func _build_npc_senses() -> void:
+	npc_senses = DotNpcSenses.new()
+
+	# Tuned for a sandbox rather than for a horde. A playground NPC is something a
+	# player is poking at, so it should be harder to make it change its mind and quicker
+	# to give up than a zombie in a corridor would be.
+	npc_senses.switch_ratio = 0.55
+	npc_senses.commitment_grace = 2.5
+
+	# Off. A line-of-sight raycast per candidate per NPC at 128 Hz is the single most
+	# expensive thing an NPC layer can do, and in a sandbox where the NPCs are toys
+	# nobody is hiding from them. A catalogue entry can still ask for it per kind.
+	npc_senses.line_of_sight_enabled = true
+
+
+## The players as perception candidates. See [member npc_candidates].
+func _rebuild_npc_candidates() -> void:
+	npc_candidates.clear()
+
+	for id in players:
+		var player: PlaygroundPlayer = players[id]
+
+		# Loudness is the player's own speed. A sprinting player is heard further than
+		# one edging along a wall, which is the whole reason hearing is separate from
+		# sight — and it is a number this game already has.
+		var loudness := player.speed() * 0.9
+
+		npc_candidates.append(
+			DotNpcSenses.Candidate.new(id, player.global_position, &"player", loudness)
+		)
 
 
 ## Drops an entity from the tick list when its prop goes.

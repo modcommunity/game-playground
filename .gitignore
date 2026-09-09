@@ -29,3 +29,6 @@ Thumbs.db
 
 # Editors
 .vscode/
+
+# Screenshots are evidence for a review, not assets
+/screenshots/

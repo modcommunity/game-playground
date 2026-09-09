@@ -26,6 +26,13 @@ extends Node
 
 const TICK := 1.0 / 128.0
 
+## How close to the tower's first platform the bot jumps, in metres.
+##
+## Its inner edge is 1.1 m from its centre, so this is about a metre and a half of
+## take-off — a comfortable jump rather than a perfect one, which is what a check about
+## whether the course is REACHABLE should ask for.
+const TOWER_TAKE_OFF := 2.6
+
 ## Preloaded rather than named: the built-in maps have no `class_name`, deliberately
 ## — they are content, and a map that reserved a global identifier in every consuming
 ## project is the thing dot-map exists to avoid.
@@ -879,6 +886,100 @@ func _test_props_are_built_from_their_definitions() -> void:
 	playground.props.clear_all(DotPropSpawner.REASON_ADMIN)
 
 
+## Bonus 2: the spiral, and the two things about it that a count cannot check.
+##
+## [b]Its gaps are checked against the MOVEMENT, not against a number somebody liked.[/b]
+## A spiral re-tuned to a larger radius or fewer platforms is a course that cannot be
+## finished, and nothing about it looks wrong: the platforms are still there, still
+## evenly spaced, still rising. The only thing that says it is broken is a jump arc, so
+## that is what this asserts — the same reasoning `dm_atrium`'s stair height needed, one
+## dimension over.
+func _test_the_tower(playground: Playground, zones: DotTimerZoneSet) -> void:
+	var track := DotTimerTrack.BONUS_FIRST + 1
+
+	_check(
+		zones.of_kind(DotTimerZone.Kind.START, track).size() == 1,
+		"the tower on bonus 2 has one start"
+	)
+	_check(
+		zones.of_kind(DotTimerZone.Kind.END, track).size() == 1,
+		"and one finish"
+	)
+	_check(
+		zones.of_kind(DotTimerZone.Kind.STAGE, track).size() == 2,
+		"and two splits"
+	)
+	_check(
+		zones.of_kind(DotTimerZone.Kind.RESPAWN, track).size() == 1,
+		"and somewhere to land when you come off it"
+	)
+
+	# A jump at the controller's own numbers. Airborne time is 2 * v / g with
+	# v = sqrt(2 * g * jump_height), so the reach is that time at the ground speed.
+	var tunables := DotFpsTunables.new()
+	var rise_speed := sqrt(2.0 * tunables.gravity * tunables.jump_height)
+	var airborne := 2.0 * rise_speed / tunables.gravity
+	var reach := tunables.max_speed * airborne
+
+	var widest := 0.0
+	var tallest := 0.0
+	var previous := Vector3(
+		PgLobby.TOWER_X, PgLobby.TOWER_BASE_Y, PgLobby.TOWER_Z
+	)
+
+	for i in range(PgLobby.TOWER_STEPS):
+		var at := PgLobby.tower_platform_centre(i)
+		var flat := Vector3(at.x - previous.x, 0.0, at.z - previous.z)
+
+		# Edge to edge, not centre to centre. What a player has to clear is the air
+		# between the platforms, and a check on centres quietly passes a course whose
+		# platforms shrank.
+		widest = maxf(widest, flat.length() - PgLobby.TOWER_PLATFORM.x)
+		tallest = maxf(tallest, at.y - previous.y)
+		previous = at
+
+	_check(
+		widest < reach,
+		"every gap on the spiral is inside a jump",
+		"widest %.2f m against a %.2f m reach" % [widest, reach]
+	)
+	_check(
+		tallest < tunables.jump_height,
+		"and no step is also a wall",
+		"tallest %.2f m against a %.2f m jump" % [tallest, tunables.jump_height]
+	)
+
+	# The splits are HEIGHT bands, and the reason is that a vertical line across a
+	# spiral is crossed twice per turn. Two bands at the same height would be the same
+	# bug wearing a different hat, so they have to be apart by more than their own
+	# thickness.
+	var stages := zones.of_kind(DotTimerZone.Kind.STAGE, track)
+	var heights: Array[float] = []
+
+	for stage in stages:
+		# `centre()`, not an AABB: [DotTimerZone] has no `aabb()` and the first version
+		# of this called one. It did not fail the suite — the script error aborted this
+		# function and the two checks below it never ran, so the run reported 201 passed
+		# and 0 failed while being two checks short. The same hazard as an un-awaited
+		# coroutine, reached from a different direction, and the reason a suite's own
+		# stderr is worth reading even when it exits 0.
+		heights.append(stage.centre().y)
+
+	_check(
+		heights.size() == 2 and absf(heights[0] - heights[1]) > 1.0,
+		"and its two splits are at different heights",
+		"%s; a vertical line across a spiral is crossed twice per turn" % str(heights)
+	)
+
+	# The finish is above the pillar, so the last jump is inward rather than round.
+	var finish := PgLobby.tower_finish_centre()
+	_check(
+		absf(finish.x - PgLobby.TOWER_X) < 0.01
+			and absf(finish.z - PgLobby.TOWER_Z) < 0.01,
+		"and it finishes in the middle, so the last jump is a different jump"
+	)
+
+
 ## The chaser goes through dot-npc's perception, not "the nearest player this tick".
 ##
 ## [b]Every check here fails on the version this replaced.[/b] The old chaser called
@@ -1508,10 +1609,16 @@ func _test_the_sandbox_and_its_course() -> void:
 
 	var tracks := playground.tracks_on_this_map()
 	_check(
-		tracks == [DotTimerTrack.MAIN, DotTimerTrack.BONUS_FIRST],
-		"the game can see both tracks without being told about them",
+		tracks == [
+			DotTimerTrack.MAIN,
+			DotTimerTrack.BONUS_FIRST,
+			DotTimerTrack.BONUS_FIRST + 1,
+		],
+		"the game can see all three tracks without being told about them",
 		str(tracks)
 	)
+
+	_test_the_tower(playground, zones)
 
 	# The main track, exactly as before: walking about starts nothing.
 	player.timer.set_track(DotTimerTrack.MAIN)
@@ -1617,11 +1724,132 @@ func _test_the_sandbox_and_its_course() -> void:
 		"%.2f m away" % player.global_position.distance_to(under)
 	)
 
+	await _walk_the_tower(player)
+
 	playground.remove_player(&"bot")
 	_check(playground.players.is_empty(), "a player can leave cleanly")
 	_check(
 		playground.props.world_count() == 0,
 		"and their props go with them"
+	)
+
+
+## A bot actually gets onto bonus 2's first platform.
+##
+## [b]Only the first jump, and that is the honest limit of a bot here.[/b] A spiral is
+## finished by air-strafing round a corner, which is a human skill and not something a
+## bot holding forward can do — a test that pretended otherwise would either fail for
+## ever or be quietly relaxed until it meant nothing. What a bot CAN prove is the pair of
+## things the geometry could get wrong on its own: that the spawn faces the course, and
+## that the first platform is reachable from the pad by running at it and jumping.
+##
+## Both are invisible to every count. A spawn facing the pillar and a first platform half
+## a metre too far both give a course that looks perfect and cannot be started.
+func _walk_the_tower(player: PlaygroundPlayer) -> void:
+	var track := DotTimerTrack.BONUS_FIRST + 1
+
+	_check(player.timer.set_track(track), "the tower's track switches")
+	playground.spawn_player(&"bot")
+
+	var spawn := PgLobby.build_zones().first_of_kind(DotTimerZone.Kind.SPAWN, track)
+
+	_check(
+		player.global_position.distance_to(spawn.destination) < 0.5,
+		"and puts the player on the tower's pad",
+		"%.2f m away" % player.global_position.distance_to(spawn.destination)
+	)
+
+	_check(
+		Vector3(
+			player.global_position.x - PgLobby.TOWER_X,
+			0.0,
+			player.global_position.z - PgLobby.TOWER_Z
+		).length() > PgLobby.TOWER_PILLAR * 0.5,
+		"outside the pillar rather than inside it",
+		"a spawn inside a pillar is a player who cannot move, and every count passes"
+	)
+
+	var first := PgLobby.tower_platform_centre(0)
+	var facing := player.aim_direction()
+	var toward := Vector3(
+		first.x - player.global_position.x, 0.0, first.z - player.global_position.z
+	).normalized()
+
+	_check(
+		facing.dot(toward) > 0.9,
+		"facing the first platform rather than the pillar",
+		"dot %.2f; a spiral has no obvious forward and finding it costs a second"
+			% facing.dot(toward)
+	)
+
+	# Run first, jump at the edge. NOT jump held down from the start.
+	#
+	# [b]Holding jump is how a bot gets nowhere in a Quake-style controller, and it is
+	# worth writing down.[/b] The first version held it, and the bot hopped in place at
+	# exactly 1.00 m/s for six hundred ticks: air acceleration only rewards strafing, so
+	# a player who never touches the ground and only holds forward never accelerates.
+	# The movement was behaving perfectly and the test was asking for something no
+	# player does either.
+	var run := DotFpsCommand.new()
+	run.move = Vector2(0.0, 1.0)
+	run.yaw = spawn.destination_yaw
+
+	# A bit field, not a `jump` property. `cmd.jump = true` assigns nothing and pushes
+	# an error — which the first version of this did, and the run still exited 0 because
+	# a script error inside a test aborts that test rather than the suite.
+	var leap := run.duplicate_command()
+	leap.set_button(DotFpsCommand.BUTTON_JUMP, true)
+
+	# An Array, not a bool: a GDScript lambda captures by value, and while nothing here
+	# is a lambda, this file has been bitten by that often enough that the habit is
+	# cheaper than remembering which loops are safe.
+	var reached: Array[bool] = [false]
+
+	# Jumped when close enough to the platform and standing on something.
+	#
+	# Distance to the target rather than distance from the pad's centre, because the
+	# pad is a square and the course runs off one of its CORNERS — a radius from the
+	# middle is a different number in every direction and would have the bot taking off
+	# a metre early on the diagonal. And only while grounded, because the controller
+	# only jumps on a tick it is standing on something.
+	for _tick in range(240):
+		var to_platform := Vector3(
+			player.global_position.x - first.x, 0.0, player.global_position.z - first.z
+		).length()
+
+		var jumping := (
+			player.controller.state.is_grounded() and to_platform < TOWER_TAKE_OFF
+		)
+
+		player.controller.apply_command(
+			(leap if jumping else run).duplicate_command()
+		)
+
+		await get_tree().physics_frame
+
+		# Whether it was EVER over the platform, not where it ends up.
+		#
+		# A bot holding forward runs straight, and this course turns — so it crosses
+		# platform 0, carries on over the far edge and falls. The first version of this
+		# check looked at the final position and reported 6.90 m for a bot that had
+		# been dead centre on the platform seventy ticks earlier. Reaching it is the
+		# question; staying on a spiral is a human's job.
+		if not reached[0]:
+			var over := Vector3(
+				player.global_position.x - first.x,
+				0.0,
+				player.global_position.z - first.z
+			).length()
+
+			reached[0] = (
+				over < PgLobby.TOWER_PLATFORM.x * 0.5
+				and player.global_position.y >= first.y + PgLobby.TOWER_PLATFORM.y * 0.5
+			)
+
+	_check(
+		reached[0],
+		"and a bot running off the pad reaches the first platform",
+		"never got over it; the spawn faces it and the gap is supposed to be jumpable"
 	)
 
 

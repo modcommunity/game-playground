@@ -458,8 +458,9 @@ is aiming at buttons with.
 
 ## The timer is not a surf-and-bhop thing, and `pg_lobby` is where that is said
 
-`pg_lobby` is a sandbox on the **main** track and a nine-platform jump course on
-**bonus 1**, and both halves are deliberate.
+`pg_lobby` is a sandbox on the **main** track, a nine-platform jump course on
+**bonus 1** and a sixteen-platform spiral tower on **bonus 2**, and all three are
+deliberate.
 
 The main track has no start zone and no end zone, so a player building on the plate is
 on a map with no timer — which is what `pg_lobby` has always been for, and the one
@@ -476,6 +477,37 @@ usable.** It is the air just above the sandbox floor under the course: a player 
 bonus 1 who falls off touches it and goes back to the start pad, and a player on the
 main track walking through the same corner with a physics gun is not touched at all.
 `DotTimer` filters zones by the run's track before it acts on any of them.
+
+### Bonus 2 is a different skill, not a longer bonus 1
+
+A second route through a map players already know is worth more than a fifth map nobody
+has learned, and the two courses are deliberately asking different questions. Bonus 1 is
+a straight line with widening gaps: **how far can you jump.** Bonus 2 is a spiral
+climbing a pillar, so every jump is a turning one: **can you keep your speed round a
+corner**, which in a Quake-style controller is air-strafing and is the thing the movement
+is actually about.
+
+Three things about it that are not visible in any count, and one of them was a real bug:
+
+- **The splits are height bands, not lines.** A vertical line across a spiral is crossed
+  twice per turn, so a stage drawn the way bonus 1's is would fire on the way round as
+  well as on the way up. The thing that only happens once on a tower is reaching a
+  height, so that is what is measured.
+- **The pillar starts at the top of the pad, not at the floor.** The first version ran it
+  from `y = 0`, which put a 2.4 m column straight up through the middle of the start pad
+  — so the player spawned *inside* it and could not move. Every count passed: the pad was
+  there, the platforms were there, the zones were right. What found it was a bot that
+  reported it had not gone anywhere.
+- **The tower's start pad is smaller than the jump course's**, because an 8 m pad reaches
+  5.66 m at its corners and the first platform's inner edge is at 4.9 m — so the two
+  overlap and the first jump of a jumping course is a walk. Nothing about that is visible
+  from above.
+
+**The spawn yaw is derived, and the sign convention bit.** `DotFpsMotor._view_basis`
+builds forward as `(-sin(yaw), 0, -cos(yaw))`, so facing a direction is
+`atan2(-dx, -dz)`; the obvious `atan2(dx, dz)` is 180 degrees out *and* mirrored. A
+spiral has no obvious forward, so a player spawning with their back to it has to find the
+course before they can start it — the bot caught it as a dot product of exactly -1.
 
 **`Playground.tracks_on_this_map()` is derived from the zones, not declared.** A second
 list of tracks is a second thing that can disagree with the zone file — and it is the
@@ -583,13 +615,26 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
     godot --headless --path . --check-only --script "res://${f#./}"
 done
 godot --headless --path . --script tools/export_zones.gd
-godot --headless --path . res://examples/headless_playground.tscn   # 195 checks
+godot --headless --path . res://examples/headless_playground.tscn   # 208 checks
 godot --headless --path . res://examples/headless_net.tscn          # 73 checks
 godot --headless --path . res://examples/dedicated.tscn             # 59 checks
 ```
 
 **Run the check-only pass first.** A script that fails to parse makes the scene fail
 to load and the process then **hangs** rather than exiting.
+
+**And read the suite's own stderr even when it exits 0.** A script error inside a test
+aborts *that test* and not the run, so the checks after it never execute and the total
+goes down rather than the suite failing. It happened here: a call to a method
+`DotTimerZone` does not have took two checks out of a run that reported 201 passed and 0
+failed.
+
+**`tools/screenshot.sh <map>` renders a map so a person can look at it.** It needs
+`xvfb-run` — `--headless` gives a null renderer and saves empty frames, which is worse
+than no screenshot because it looks like one. Copied from `game-arena`'s rather than
+shared with it, because these are separate repositories. Two of the three problems above
+were found by a bot; the finish cap being invisible behind its own pillar was found by
+looking at the picture.
 
 Every addon's own suite still has to pass too — this one exercises the joins and
 deliberately does not re-test what they cover.

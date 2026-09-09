@@ -470,6 +470,34 @@ func _menu_is_open() -> bool:
 ## and nothing else broke, because `DotFpsSampler.sample` polls the `InputMap` rather
 ## than reading events: the player walked, shot and spawned props with a dead mouse.
 ## `game-g2gfast` had the right form already; this file was the outlier.
+## Set by a headless suite to answer [method mouse_drives_view] without a display
+## server. Left null in play, where the real mouse mode is the only honest answer.
+var mouse_capture_override: Variant = null
+
+
+## Whether the pointer is currently a look input rather than a pointer.
+##
+## [b]A released cursor is not a look input, and [method _menu_is_open] does not answer
+## that.[/b] KEY_ESCAPE toggles the capture with no screen open, so after one press the
+## cursor is free, the menu check is false, and every motion of a pointer the player is
+## using as a pointer was still spent turning the view or twisting the prop in the gun.
+## `game-arena` has always guarded on the mode here; this file and `game-g2gfast` did
+## not, and it is the second half of the same "the mouse and the tick disagree" bug that
+## [method active_sampler] fixed the first half of.
+##
+## [b]A method with an override rather than a read of `Input.mouse_mode` at the call
+## site, because that read cannot be tested here.[/b] The dummy display server pins the
+## mode to `MOUSE_MODE_VISIBLE` and drops every write to it without erroring, so a suite
+## can neither put a client into the state a player plays in nor out of it — which is
+## why arena's identical guard has never been exercised by anything, and why this one
+## would not have been either.
+func mouse_drives_view() -> bool:
+	if mouse_capture_override != null:
+		return bool(mouse_capture_override)
+
+	return Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+
+
 func active_sampler() -> DotFpsSampler:
 	if link != null:
 		return _sampler
@@ -567,6 +595,9 @@ func _is_menu_key(event: InputEvent) -> bool:
 
 func _on_mouse_motion(event: InputEventMouseMotion) -> void:
 	if _menu_is_open():
+		return
+
+	if not mouse_drives_view():
 		return
 
 	if _rotating and _holding:

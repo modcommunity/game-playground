@@ -1608,6 +1608,13 @@ func _test_the_client_boots() -> void:
 
 	var motion := InputEventMouseMotion.new()
 	motion.relative = Vector2(120.0, 0.0)
+
+	# [b]Captured, because a look input is only a look input while it is.[/b] Headless
+	# starts VISIBLE, which is the state a player is in after one press of Escape, and
+	# the guard in `_on_mouse_motion` is what stops a free cursor from turning the view
+	# under itself. Setting it here makes this check model somebody playing rather than
+	# somebody with a menu key stuck down.
+	client.mouse_capture_override = true
 	client._unhandled_input(motion)
 
 	# The sampler accumulates and spends it on the next simulated tick, so the view has
@@ -1624,6 +1631,33 @@ func _test_the_client_boots() -> void:
 			client.player.controller.state.yaw if client.player != null else 0.0
 		]
 	)
+
+	# [b]And the other half: a released cursor turns nothing.[/b] Escape frees the
+	# pointer with no screen open, so `_menu_is_open` is false and every check above
+	# still passes while the view spins under a cursor the player is aiming at a
+	# spawn menu with. Same event, same client, one property different.
+	#
+	# Driven through `mouse_capture_override` because `Input.mouse_mode` is a no-op
+	# under the dummy display server -- it reads VISIBLE however it is written, so a
+	# suite that set it directly would prove nothing and pass anyway.
+	var released_yaw: float = client.player.controller.state.yaw
+
+	client.mouse_capture_override = false
+
+	var free_motion := InputEventMouseMotion.new()
+	free_motion.relative = Vector2(120.0, 0.0)
+	client._unhandled_input(free_motion)
+
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+
+	_check(
+		is_equal_approx(client.player.controller.state.yaw, released_yaw),
+		"and a motion with the cursor released turns nothing",
+		"yaw %.3f -> %.3f" % [released_yaw, client.player.controller.state.yaw]
+	)
+
+	client.mouse_capture_override = true
 
 	# And the routing rule itself, for the deployment this suite does not build. A
 	# networked client's mouse must reach `_sampler`, because that is the sampler

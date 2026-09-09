@@ -552,6 +552,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				bridge.ask_undo()
 			else:
 				playground.props.undo(player_id)
+		KEY_F:
+			_use_vehicle()
 		KEY_R:
 			_unfreeze_all()
 		KEY_1:
@@ -988,6 +990,28 @@ func _on_menu_action(action: StringName) -> void:
 ## [b]Never refused, deliberately.[/b] `DotPropSpawner.may_freeze` gates freezing
 ## against `per_player_frozen`, and the reverse has no limit to check — a cap that
 ## stopped somebody tidying up would be a limit fighting its own purpose.
+## Gets in, or gets out. One key for both.
+##
+## [b]F rather than E, because E already spawns here.[/b] Worth saying out loud: the
+## sandboxes this copies bind "use" to E, and a player arriving from one of those will
+## press it — so the day this game gains a use verb of its own, these two want swapping
+## together rather than one at a time.
+##
+## [b]The client never decides the answer.[/b] It asks; the server owns the seats, the
+## exit sweep and the refusal, exactly as it owns a spawn. On a client with no bridge —
+## single player, and the suite — the same call goes straight to the simulation, which is
+## the same division every other verb in this file makes.
+func _use_vehicle() -> void:
+	if bridge != null:
+		bridge.ask_use_vehicle()
+		return
+
+	var used := playground.use_vehicle(player_id)
+
+	if not used.ok:
+		_report(used)
+
+
 func _unfreeze_all() -> void:
 	var thawed := 0
 

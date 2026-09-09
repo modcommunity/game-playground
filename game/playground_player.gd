@@ -58,6 +58,14 @@ var timer_style: DotTimerStyle = null
 var phys_gun: DotPhysGun = null
 var grav_gun: DotGravGun = null
 
+## Whether this player is in a vehicle, and so is not walking.
+##
+## [b]Read-only from outside: [method set_riding] is the switch.[/b] It exists as a flag
+## on the PLAYER rather than as a lookup in the vehicle spawner because everything that
+## has to know is on this side — the tick, the sampler, the net behaviour and the HUD —
+## and a client has no vehicle spawner at all to ask.
+var riding: bool = false
+
 ## Set by the world so the timer is ticked with the same clock the movement uses.
 ## [b]Assigned through, not just stored.[/b] The controller sizes its step from its own
 ## copy, taken in [method _ready] — so setting this on a player who already exists and
@@ -193,6 +201,17 @@ func simulate(tick: int, delta: float) -> void:
 	if sampler != null:
 		controller.apply_command(sampler.sample(delta))
 
+	# A rider's movement is TURNED OFF, not ignored, and the sample above still happens.
+	#
+	# Off, because a controller simulating a player who is parented into a moving vehicle
+	# writes its own answer into the state every tick while the vehicle carries the node
+	# somewhere else — two authorities over one transform, which reads as the car shaking
+	# itself apart at speed. Sampled anyway, because those same keys are what the car is
+	# being driven with: `Playground._drive_vehicles` reads the pending command and turns
+	# it into throttle and steering.
+	if riding:
+		return
+
 	controller.simulate_tick(tick, delta)
 
 
@@ -229,6 +248,47 @@ func _on_simulated(_tick: int, state: DotFpsState) -> void:
 
 	if speed_zone != null:
 		state.velocity = DotTimerRules.apply_speed_limit(state.velocity, speed_zone)
+
+
+## Gets in or out of a vehicle. Called by the ride's `on_seated` / `on_unseated`.
+##
+## Both halves matter and the second is the one that is easy to leave out: a player put
+## back down after a drive whose velocity was whatever it was when they got in launches
+## across the map on their first step.
+func set_riding(value: bool) -> void:
+	if riding == value:
+		return
+
+	riding = value
+
+	if riding:
+		controller.state.velocity = Vector3.ZERO
+	else:
+		# Handed back walking, standing still and in the air. The controller works out
+		# on its next tick whether there is ground under them, which is the honest answer
+		# — the exit sweep only proved there was room, not that it was a floor.
+		controller.state.velocity = Vector3.ZERO
+		controller.state.mode = DotFpsState.Mode.AIR
+
+
+## Copies where the vehicle has carried this player into the movement state.
+##
+## [b]Without this a passenger is drawn on every other machine at the spot where they got
+## in.[/b] The NODE is carried by dot-vehicle, which reparents it into the seat — but the
+## timer, the NPC candidate list, the HUD and above all [PlaygroundPlayerNet] all read
+## [code]controller.state.position[/code], and nothing was writing it. The failure is
+## invisible in one process, because in one process the node is the thing being looked at.
+func adopt_ride(at: Vector3, velocity: Vector3) -> void:
+	controller.state.position = at
+	controller.state.velocity = velocity
+
+
+## The command this player is about to be simulated with, or was last simulated with.
+##
+## What a vehicle is driven from. Never null: the controller keeps the last command it
+## was given, which is what makes a dropped input a straight line rather than a stop.
+func pending_command() -> DotFpsCommand:
+	return controller.current_command if controller.current_command != null else DotFpsCommand.new()
 
 
 ## The sample the world feeds the timer with. Reused, never allocated per tick.

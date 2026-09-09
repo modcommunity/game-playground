@@ -87,6 +87,7 @@ func _run() -> void:
 	await _test_weapons()
 	await _test_spawn_menu()
 	await _test_the_sandbox_and_its_course()
+	await _test_vehicles()
 	await _test_the_client_boots()
 
 	print("")
@@ -1868,6 +1869,236 @@ func _walk_the_tower(player: PlaygroundPlayer) -> void:
 ## the build, which is every map here — so this test exercises exactly the case that
 ## broke. It would deadlock, not fail, without `booted` being checked before the
 ## await; the suite's own `timeout` is what turns that into a red run.
+# --- Vehicles --------------------------------------------------------------
+
+## A car spawned from the prop catalogue, driven, ridden in and got out of.
+##
+## [b]The whole point of this test is that a vehicle here is BOTH things at once.[/b]
+## dot-vehicle's own 122 checks drive real bodies through real physics, and every one of
+## them spawns through [method DotVehicleSpawner.spawn] into a world with nothing else in
+## it. What has never run anywhere is a vehicle that is also a [DotPropInstance] — on a
+## prop budget, on an undo stack, adopted rather than spawned, with its wheels built by
+## the game after the body was created by somebody else.
+func _test_vehicles() -> void:
+	print("vehicles")
+
+	var changed: DotResult = await playground.change_map(&"pg_lobby")
+	_check(changed.ok, "the sandbox loads")
+
+	# The sandbox test above lets its player leave, so this one brings the bot back.
+	var driver := playground.add_player(&"bot", "Bot")
+	playground.props.limits.spawn_interval = 0.0
+
+	# The corner of the plate opposite the jump course and the tower, which is the one
+	# part of this map that is flat and empty for sixty metres in every direction. A car
+	# is not a player: it covers the width of the sandbox in a few seconds, and the first
+	# version of this test drove into the scenery and measured a stationary car.
+	var at := Vector3(-60.0, 1.2, -60.0)
+	driver.teleport(at + Vector3(2.5, 0.0, 0.0), 0.0)
+
+	var spawned := playground.props.spawn(&"buggy", &"bot", at)
+
+	_check(spawned != null, "a buggy spawns out of the PROP catalogue")
+
+	if spawned == null:
+		return
+
+	_check(
+		PlaygroundSpawnables.kind_of(spawned.def) == PlaygroundSpawnables.Kind.VEHICLE,
+		"and the catalogue says it is a vehicle"
+	)
+
+	var vehicle := playground.vehicles.vehicle_for_node(spawned.node)
+
+	_check(vehicle != null, "and it was adopted by the vehicle spawner")
+
+	if vehicle == null:
+		return
+
+	_check(vehicle.chassis is DotVehicleWheeled, "with Godot's raycast wheels under it")
+
+	var body := spawned.node as PlaygroundVehicle
+	_check(body != null and body.wheel_count() == 4, "and four wheels actually built")
+	_check(
+		body != null and is_equal_approx(body.mass, vehicle.def.tuning().mass),
+		"and one mass, read off the tunables by both catalogues",
+		"%.1f vs %.1f" % [
+			body.mass if body != null else -1.0, vehicle.def.tuning().mass
+		]
+	)
+
+	# Let it settle onto its suspension before anything is measured. A raycast vehicle
+	# spawned in the air is falling, and a "did it drive forward" measured through the
+	# drop is measuring the drop.
+	for _i in range(40):
+		await get_tree().physics_frame
+
+	_check(
+		playground.use_vehicle(&"bot").ok,
+		"the bot standing beside it gets in"
+	)
+	_check(driver.riding, "and stops being a player who walks")
+	_check(vehicle.driver() == &"bot", "in the driving seat")
+	_check(
+		driver.get_parent() != playground and driver.is_inside_tree(),
+		"with the rider's node carried by the vehicle",
+		"which is what puts a rider's camera on it without a line about cameras"
+	)
+
+	# Forward. `move.y` is forward for a walking player and it is forward here.
+	var forward := DotFpsCommand.new()
+	forward.move = Vector2(0.0, 1.0)
+
+	var before := vehicle.position()
+	await _drive(&"bot", forward, 200)
+
+	var travelled := vehicle.position() - before
+
+	_check(travelled.length() > 4.0, "it drives", "%.2f m" % travelled.length())
+	_check(
+		vehicle.forward_speed() > 0.5,
+		"FORWARDS, which is the one dot-vehicle says a car gets wrong",
+		"%.2f m/s along its own -Z" % vehicle.forward_speed()
+	)
+	_check(
+		driver.controller.state.position.distance_to(vehicle.position()) < 4.0,
+		"and the driver's replicated position went with it",
+		"a passenger drawn where they got in is invisible in one process"
+	)
+
+	# Steering. Both directions, because a check that only measured "it turned" would
+	# pass for a car that turns the wrong way — which is exactly the bug dot-vehicle
+	# found in itself.
+	var right := DotFpsCommand.new()
+	right.move = Vector2(1.0, 1.0)
+
+	var heading_before := -vehicle.node.global_basis.z
+	await _drive(&"bot", right, 160)
+	var heading_after := -vehicle.node.global_basis.z
+
+	# Positive Y in a cross product of before × after means the turn was to the LEFT in
+	# Godot's left-handed-looking convention, so a right turn is negative.
+	var turn := heading_before.cross(heading_after).y
+
+	_check(turn < -0.05, "steering right turns it right", "cross.y = %.3f" % turn)
+
+	# A passenger, which is the case that only breaks with two people in it.
+	var passenger := playground.add_player(&"rider", "Rider")
+	passenger.teleport(vehicle.position() + Vector3(0.0, 0.0, 4.0))
+
+	_check(
+		playground.vehicles.ride.enter(vehicle, &"rider", passenger).ok,
+		"a second player gets in as a passenger"
+	)
+	_check(vehicle.occupant_count() == 2, "and the car has two people in it")
+	_check(vehicle.driver() == &"bot", "with the driver unchanged")
+
+	var passenger_before := passenger.controller.state.position
+	await _drive(&"bot", forward, 120)
+
+	_check(
+		passenger.controller.state.position.distance_to(passenger_before) > 1.0,
+		"the passenger is carried too",
+		"%.2f m" % passenger.controller.state.position.distance_to(passenger_before)
+	)
+
+	# Getting out, which is the half dot-vehicle says the bugs are in.
+	#
+	# Asserted on the SPEED first. A refusal test run against a car that happens to be
+	# stationary passes without testing anything, which is how the first version of this
+	# read: "not ok, or slow enough" is true for a car nobody managed to move.
+	# Put back on a clean patch and pointed down the plate before anything about SPEED is
+	# measured. Not tidiness: everything up to here has been steering it, and a test that
+	# measures a speed at the end of a drive it did not control is a test that measures
+	# whatever it happened to hit.
+	vehicle.node.global_transform = Transform3D(Basis.IDENTITY, at)
+	vehicle.body().linear_velocity = Vector3.ZERO
+	vehicle.body().angular_velocity = Vector3.ZERO
+
+	for _i in range(30):
+		await get_tree().physics_frame
+
+	await _drive(&"bot", forward, 220)
+
+	_check(
+		vehicle.speed() > vehicle.def.tuning().max_exit_speed,
+		"the car is going fast enough for the exit rule to have something to say",
+		"%.2f m/s vs %.1f" % [vehicle.speed(), vehicle.def.tuning().max_exit_speed]
+	)
+
+	var moving := playground.vehicles.ride.exit(vehicle, &"rider")
+	_check(
+		not moving.ok,
+		"and getting out at that speed is refused",
+		"speed %.1f, limit %.1f" % [vehicle.speed(), vehicle.def.tuning().max_exit_speed]
+	)
+
+	var stop := DotFpsCommand.new()
+	stop.set_button(DotFpsCommand.BUTTON_CROUCH, true)
+	await _drive(&"bot", stop, 200)
+
+	_check(vehicle.speed() < 2.0, "the brake stops it", "%.2f m/s" % vehicle.speed())
+
+	var out := playground.vehicles.ride.exit(vehicle, &"rider")
+	_check(out.ok, "and then the passenger can get out", str(out.error) if not out.ok else "")
+	_check(not passenger.riding, "and is walking again")
+	_check(
+		passenger.global_position.distance_to(vehicle.position()) > 0.9,
+		"put down beside the car rather than inside it",
+		"%.2f m" % passenger.global_position.distance_to(vehicle.position())
+	)
+	_check(
+		passenger.get_parent() == playground,
+		"and handed back to whoever had them before"
+	)
+
+	# The hovercraft, which is the only thing proving the chassis is a subclass point
+	# rather than a promise.
+	var skiff_prop := playground.props.spawn(&"skiff", &"bot", Vector3(-24.0, 1.5, 24.0))
+	_check(skiff_prop != null, "a skiff spawns")
+
+	if skiff_prop != null:
+		var skiff := playground.vehicles.vehicle_for_node(skiff_prop.node)
+		_check(skiff != null and skiff.chassis is DotVehicleHover, "on the hover chassis")
+		_check(
+			(skiff_prop.node as PlaygroundVehicle).wheel_count() == 0,
+			"with no wheels built for it"
+		)
+
+		for _i in range(120):
+			await get_tree().physics_frame
+
+		_check(
+			skiff != null and skiff.position().y > 0.55,
+			"and it is still off the ground a second later",
+			# Above its own half-height plus a margin: a skiff whose hover did nothing
+			# would come to rest with its box on the floor at exactly 0.35.
+			"y = %.2f" % (skiff.position().y if skiff != null else -1.0)
+		)
+
+	# Deleting the car with somebody in it. A rider left inside a freed vehicle is a
+	# player parented to nothing: invisible, unkillable, and unable to enter anything
+	# else for the rest of the round, with no error anywhere.
+	_check(playground.use_vehicle(&"rider").ok, "the passenger gets back in")
+
+	playground.props.remove(spawned.instance_id, DotPropSpawner.REASON_ADMIN)
+	await get_tree().physics_frame
+
+	_check(
+		not playground.vehicles.ride.is_riding(&"rider")
+		and not playground.vehicles.ride.is_riding(&"bot"),
+		"removing the PROP evacuates everybody in the vehicle"
+	)
+	_check(not driver.riding, "and the driver is a walking player again")
+	_check(
+		playground.vehicles.world_count() == 1,
+		"and the vehicle spawner has let go of it, leaving only the skiff",
+		"%d left" % playground.vehicles.world_count()
+	)
+
+	playground.remove_player(&"rider")
+
+
 func _test_the_client_boots() -> void:
 	print("the client boots")
 

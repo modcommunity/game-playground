@@ -639,9 +639,89 @@ looking at the picture.
 Every addon's own suite still has to pass too — this one exercises the joins and
 deliberately does not re-test what they cover.
 
+## A vehicle is a prop with seats in it
+
+`dot-vehicle` is installed here for the same reason `dot-npc` is: for the half this game
+was going to get wrong. What it is **not** used for is spawning.
+
+**Every vehicle arrives through `DotPropSpawner` and is handed over with
+`DotVehicleSpawner.adopt()`.** That is the whole design and it is the same call the
+entities make one paragraph up: a vehicle is a `DotPropInstance` first — it counts against
+the prop budget, it is on the undo stack, it goes when its owner leaves, a physics gun can
+pick it up and a gravity gun can punt it. `adopt()` did not exist before this; it was added
+to dot-vehicle for exactly this deployment, and its CLAUDE.md says why.
+
+The join is one field of `meta`, exactly as an entity's script path is:
+
+```json
+{ "kind": "vehicle", "vehicle": "buggy" }
+```
+
+`PlaygroundVehicles` is the second catalogue and it is deliberately not merged with the
+prop one: `DotPropCatalogue` says what may be put in the world and what it costs, and
+`DotVehicleCatalogue` says how a thing drives. **The prop rows are derived from the vehicle
+rows**, so the mass a physics gun checks and the mass the chassis puts on the rigid body
+are the same number read once — the two-hand-kept-copies shape that already gave dot-props
+a prop a gun refused for being too heavy and a gravity gun threw like a beach ball.
+
+### What building it found
+
+- **A wheel above the chassis box is a car that does not move.** `PlaygroundProp` builds a
+  collision box centred on the origin, so a 0.9 m body reaches 0.45 m down; wheels at
+  `wheel_y = 0.15` with a 0.42 m radius contact at 0.27 and never reach the floor. The box
+  rests on the ground, the wheels hang in the air, and a raycast vehicle with nothing in
+  contact has no traction, no steering and no brakes. **Every number in the tunables reads
+  correctly** and the car sits there at full throttle. `wheel_y` is negative here for that
+  reason and the suite counts the wheels separately from measuring the drive, because "no
+  wheels" and "wheels that touch nothing" are the same symptom.
+- **`configure` must run before `adopt`.** `DotVehicleWheeled` walks the body's direct
+  children for `VehicleWheel3D` once, at bind time, and caches what it finds. The other
+  order gives four wheels nothing drives.
+- **`continuous_cd` is turned back off for a vehicle.** `PlaygroundProp` turns it on
+  because a sandbox throws things; on a body with wheel raycasts under it, it fights the
+  wheel solver and the car judders at speed — which reads as bad suspension.
+- **A rider's node is carried and their movement state is not.** dot-vehicle reparents the
+  rider into the seat, which is what puts a client's camera on the vehicle without a line
+  about cameras anywhere. But the timer, the NPC candidate list, the HUD and
+  `PlaygroundPlayerNet` all read `controller.state.position`, and nothing was writing it —
+  so a passenger is drawn on every **other** machine at the spot where they got in, for the
+  whole journey, while being perfectly correct on their own. `Playground._carry_riders`
+  copies it back, after the vehicles tick and before the timers are fed, which is the same
+  ordering rule the players already follow.
+- **The controller is turned off, not ignored.** `PlaygroundPlayer.riding` skips
+  `simulate_tick` while still sampling, because those same keys are what the car is driven
+  with — `Playground.drive_command` is the whole mapping and it is static so a test can
+  reach it without a player.
+- **A riding client must stop predicting.** `PlaygroundPlayerNet` has two new branches: no
+  `simulate_tick` while riding, and the server's position IS written onto the node even on
+  a predicted entity, because there is no replay to spoil.
+
+### The suites, and the one thing that is a harness artefact
+
+`headless_playground` drives it in one process; `headless_net` drives it over the socket,
+which is the only place `DotVehicleNetSync` has ever been. **In `headless_net` the client's
+mirror is taken out of the physics world for the drive.** Both halves are plain nodes in
+one scene tree, so they share one physics space and the frozen mirror sits at exactly the
+coordinates the server's car is trying to leave — the first version of that test measured a
+car reversing at half a metre a second, which was the server's buggy wedged against its own
+reflection. On two machines there is no such body.
+
+**Also worth knowing before writing a test here: a car crosses this sandbox in seconds.**
+The first version drove into the scenery at (24, 24) and then measured a stationary vehicle
+at full throttle. The corner at (-60, -60) is the flat, empty one.
+
+`F` gets in and out. Not `E`, which already spawns here — and the day this game gains a use
+verb, the two want swapping together.
+
 ## Things deliberately not here
 
-- **Networking.** dot-net's bridge is the next piece, and it is now the only thing
+- **A vehicle a client predicts, and a smoothing pass in the renderer.** dot-vehicle's
+  reasoning is that a rigid body is not reproducible across machines, so a predicted
+  vehicle is a corrected one and a correction on something a player is steering reads
+  worse than the latency. Interpolation is asked for on every positional spec; whether a
+  driver still feels the round trip is a thing to MEASURE on a real link before writing
+  anything, which has not been done.
+- **Old note, kept because the shape is still true — networking.** dot-net's bridge is the next piece, and it is now the only thing
   between this and a server people can join: `examples/dedicated.tscn` boots a real
   `DotServer` with a listener, a console and the module, and what is missing is the
   per-player replication. The shape is ready — the timer and the prop spawner are

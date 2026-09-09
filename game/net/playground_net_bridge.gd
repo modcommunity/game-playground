@@ -40,6 +40,9 @@ signal props_changed()
 signal finish_received(player_id: int, time: float, rank: int)
 signal notice_received(player_id: int, text: String)
 
+## A player got into or out of a vehicle. Client side; the HUD and the camera read it.
+signal seat_changed(player_id: int, seated: bool)
+
 var game: Playground = null
 var net: DotNetManager = null
 var link: PlaygroundNetLink = null
@@ -149,6 +152,8 @@ func attach(p_game: Playground, p_net: DotNetManager, link_parent: Node) -> DotR
 		game.props.removed.connect(_on_prop_removed)
 		game.props.refused.connect(_on_prop_refused)
 		game.map_ready.connect(_on_map_ready)
+		game.vehicles.ride.entered.connect(_on_ride_entered)
+		game.vehicles.ride.exited.connect(_on_ride_exited)
 		game.timers.player_started.connect(_on_run_changed)
 		game.timers.player_stopped.connect(_on_run_stopped)
 		game.run_filed.connect(_on_run_filed)
@@ -350,10 +355,19 @@ func _on_prop_spawned(prop: DotPropInstance) -> void:
 	if body == null:
 		return
 
-	var behaviour := PlaygroundPropNet.new()
+	# A vehicle replicates through DotVehicleNetSync — its wheels' angle and which seats
+	# are full cannot be derived from a position — so which behaviour a body gets is
+	# decided by the catalogue, once, here. The table below is the same on both ends and
+	# `_apply_prop` reads it the same way.
+	var behaviour := _behaviour_for(prop.def)
 	behaviour.name = "Net"
 	behaviour.prop = body
 	body.add_child(behaviour)
+
+	var as_vehicle := behaviour as PlaygroundVehicleNet
+
+	if as_vehicle != null and game.vehicles != null:
+		as_vehicle.vehicle = game.vehicles.vehicle_for_node(body)
 
 	var identity := DotNetIdentity.new()
 	identity.name = "Identity"
@@ -403,6 +417,48 @@ func _on_prop_refused(player_id: StringName, prop_id: StringName, reason: String
 	var session_id := session_of(player_id)
 	_tell(peer_for_player(session_id), PlaygroundEvents.Kind.NOTICE,
 		PlaygroundEvents.write_notice(session_id, "Cannot spawn %s: %s" % [prop_id, reason]))
+
+
+## Which replicated behaviour a definition wants. One table, read by both ends.
+static func _behaviour_for(def: DotPropDef) -> PlaygroundPropNet:
+	if PlaygroundSpawnables.kind_of(def) == PlaygroundSpawnables.Kind.VEHICLE:
+		return PlaygroundVehicleNet.new()
+	return PlaygroundPropNet.new()
+
+
+## The net id a vehicle's body replicates under, or 0.
+func net_id_of_node(node: Node) -> int:
+	for instance_id in _prop_nets:
+		var behaviour: PlaygroundPropNet = _prop_nets[instance_id]
+
+		if behaviour.prop == node and behaviour.identity != null:
+			return behaviour.identity.net_id
+
+	return 0
+
+
+## Tells everybody that somebody got in or out.
+##
+## [b]Everybody, not just the rider.[/b] The other clients are the ones who have to stop
+## drawing a player walking and start drawing them sitting in a car, and it is the same
+## reasoning the occupancy mask already carries: a "get in" prompt over a full seat is a
+## prompt that lies.
+func announce_seat(
+	vehicle: DotVehicleInstance, rider_id: StringName, seat: DotVehicleSeat, seated: bool
+) -> void:
+	if net == null or not net.is_server or vehicle == null:
+		return
+
+	var index := 0
+
+	for i in vehicle.def.seats.size():
+		if vehicle.def.seats[i].id == seat.id:
+			index = i
+			break
+
+	_broadcast(PlaygroundEvents.Kind.SEAT, PlaygroundEvents.write_seat(
+		session_of(rider_id), net_id_of_node(vehicle.node), index, seated
+	))
 
 
 # --- Server: the tick ------------------------------------------------------
@@ -710,6 +766,10 @@ func ask_checkpoint(action: int) -> void:
 	_ask(PlaygroundEvents.Ask.CHECKPOINT, PlaygroundEvents.write_index(action))
 
 
+func ask_use_vehicle() -> void:
+	_ask(PlaygroundEvents.Ask.USE_VEHICLE, PackedByteArray())
+
+
 func ask_rtv() -> void:
 	_ask(PlaygroundEvents.Ask.RTV, PackedByteArray())
 
@@ -757,6 +817,16 @@ func _on_request(message: DotNetMessage) -> void:
 			_checkpoint(id, PlaygroundEvents.read_index(reader))
 		PlaygroundEvents.Ask.RTV:
 			game.rock_the_vote(id)
+		PlaygroundEvents.Ask.USE_VEHICLE:
+			var used := game.use_vehicle(id)
+
+			# A refusal goes back to the one player who asked. "There is nowhere to
+			# stand" is the single most confusing thing this system can do silently: the
+			# player presses the key, nothing happens, and there is no way to tell it
+			# from a key that is not bound.
+			if not used.ok:
+				_tell(peer_id, PlaygroundEvents.Kind.NOTICE,
+					PlaygroundEvents.write_notice(session_id, used.error.message))
 		PlaygroundEvents.Ask.STYLE:
 			if game.set_player_style(id, _style_id(PlaygroundEvents.read_index(reader))):
 				_broadcast(PlaygroundEvents.Kind.JOIN, _join_body(session_id))
@@ -877,6 +947,8 @@ func _on_event(message: DotNetMessage) -> void:
 			var notice := PlaygroundEvents.read_notice(reader)
 			if bool(notice["ok"]):
 				notice_received.emit(int(notice["player_id"]), str(notice["text"]))
+		PlaygroundEvents.Kind.SEAT:
+			_apply_seat(reader)
 
 
 func _apply_hello(reader: DotNetReader) -> void:
@@ -1026,7 +1098,7 @@ func _apply_prop(reader: DotNetReader) -> void:
 	# copy is a body being drawn where the server says it is, so the script is
 	# deliberately NOT attached here: it would run a second, disagreeing AI.
 
-	var behaviour := PlaygroundPropNet.new()
+	var behaviour := _behaviour_for(def)
 	behaviour.name = "Net"
 	behaviour.prop = body
 	body.add_child(behaviour)
@@ -1045,6 +1117,44 @@ func _apply_prop(reader: DotNetReader) -> void:
 
 	_prop_nets[net_id] = behaviour
 	props_changed.emit()
+
+
+func _on_ride_entered(
+	vehicle: DotVehicleInstance, rider_id: StringName, seat: DotVehicleSeat
+) -> void:
+	announce_seat(vehicle, rider_id, seat, true)
+
+
+func _on_ride_exited(
+	vehicle: DotVehicleInstance,
+	rider_id: StringName,
+	seat: DotVehicleSeat,
+	_at: Vector3
+) -> void:
+	announce_seat(vehicle, rider_id, seat, false)
+
+
+## A client's copy of "that player is in a car".
+##
+## [b]The client does not run the ride at all.[/b] It has no vehicle spawner, no exit
+## sweep and no seats — the server owns every one of those — so what arrives is the
+## answer rather than the question. What the client does with it is stop predicting a
+## player who is no longer walking, which is the one thing it would otherwise get wrong
+## on its own screen: a predicted controller simulating a passenger fights the position
+## the snapshots are putting them at, every tick, at a metre a time.
+func _apply_seat(reader: DotNetReader) -> void:
+	var info := PlaygroundEvents.read_seat(reader)
+
+	if not bool(info["ok"]):
+		return
+
+	var behaviour: PlaygroundPlayerNet = _behaviours.get(int(info["player_id"]))
+
+	if behaviour == null or behaviour.player == null:
+		return
+
+	behaviour.player.set_riding(bool(info["seated"]))
+	seat_changed.emit(int(info["player_id"]), bool(info["seated"]))
 
 
 func _apply_prop_gone(reader: DotNetReader) -> void:

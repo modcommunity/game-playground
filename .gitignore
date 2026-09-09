@@ -15,6 +15,7 @@
 /addons/dot_server
 /addons/dot_net
 /addons/dot_npc
+/addons/dot_vehicle
 
 # Records and zone files written at runtime
 /user_data/

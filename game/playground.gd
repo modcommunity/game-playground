@@ -103,6 +103,11 @@ var booted: bool = false
 var maps: DotMapSession = null
 var timers: DotTimerManager = null
 var props: DotPropSpawner = null
+
+## The vehicles. Every one of them is also a [DotPropInstance] in [member props] — see
+## [PlaygroundVehicles] for why both, and [PlaygroundSpawnables.Kind.VEHICLE] for the
+## one field of `meta` that joins them.
+var vehicles: DotVehicleSpawner = null
 var boards: DotLeaderboardManager = null
 
 ## The scripted spawnables in the world, ticked every simulated tick.
@@ -193,6 +198,7 @@ func _ready() -> void:
 	_build_leaderboards()
 	_build_timers()
 	_build_props()
+	_build_vehicles()
 	_build_npc_senses()
 	_build_maps()
 
@@ -272,6 +278,12 @@ func _simulate_tick(step: float) -> void:
 	props.advance(step)
 	maps.advance(step)
 
+	# The drivers' intent, then the chassis. Before the players move, because a rider's
+	# own move is skipped entirely and what a driver's keys mean this tick is engine
+	# force rather than acceleration.
+	_drive_vehicles()
+	vehicles.tick(step)
+
 	# What the entities can see, rebuilt before any of them thinks about it.
 	#
 	# Before, not after: a candidate list built at the end of a tick is a list of where
@@ -292,6 +304,10 @@ func _simulate_tick(step: float) -> void:
 
 	for id in players:
 		(players[id] as PlaygroundPlayer).simulate(_tick, step)
+
+	# After the moves and before the timers, which is the same ordering rule: a rider's
+	# position for this tick is where the vehicle carried them, not where they were.
+	_carry_riders()
 
 	for id in players:
 		var player: PlaygroundPlayer = players[id]
@@ -480,9 +496,15 @@ func _build_props() -> void:
 ## prop's scene needs is the game's business and overriding the spawner would mean
 ## re-implementing the budget, the cooldown and the undo stack to get at one line.
 func _on_prop_spawned(prop: DotPropInstance) -> void:
-	if PlaygroundSpawnables.kind_of(prop.def) == PlaygroundSpawnables.Kind.ENTITY:
-		_configure_entity(prop)
-		return
+	match PlaygroundSpawnables.kind_of(prop.def):
+		PlaygroundSpawnables.Kind.ENTITY:
+			_configure_entity(prop)
+			return
+		PlaygroundSpawnables.Kind.VEHICLE:
+			_configure_vehicle(prop)
+			return
+		_:
+			pass
 
 	var body := prop.node as PlaygroundProp
 
@@ -546,6 +568,168 @@ func _configure_entity(prop: DotPropInstance) -> void:
 	entities.append(entity)
 
 
+## The vehicle spawner, and the handover it drives.
+##
+## [b]It spawns nothing.[/b] Every vehicle in this game arrives through
+## [DotPropSpawner] and is handed over with [method DotVehicleSpawner.adopt], because a
+## vehicle here is a prop first — budgeted, undoable, and punt-able by a gravity gun. Its
+## own budget is left generous for that reason: the number that actually limits vehicles
+## is the prop budget, and a second limit that bites first would be a refusal an operator
+## editing `pg_prop_budget` could not explain.
+func _build_vehicles() -> void:
+	vehicles = DotVehicleSpawner.new()
+	vehicles.name = "Vehicles"
+	vehicles.authoritative = authoritative and config.allow_props
+	vehicles.catalogue = PlaygroundVehicles.catalogue()
+	vehicles.world_ref = DotNodeRef.of_path(^"../World")
+	vehicles.world_budget = 0
+	vehicles.per_player_budget = 0
+	vehicles.spawn_interval = 0.0
+
+	# The rider node IS carried: a PlaygroundPlayer is a Node3D with the camera under it
+	# on a client, so parenting it into the seat is what puts a rider's view on the
+	# vehicle without a single line about cameras in this file. The controller state is
+	# pulled back off the node each tick — see [method _carry_riders].
+	vehicles.ride.carry_rider_nodes = true
+
+	# Layer 1 is the world's, which is what a playground map builds its geometry on and
+	# what the movement collides against. Checked rather than left at the addon's default
+	# of 1 by luck: an exit sweep against the wrong mask finds nothing, always succeeds,
+	# and puts players through walls — the one failure this whole sweep exists to stop.
+	vehicles.ride.exit_mask = 1
+
+	vehicles.ride.on_seated = _on_seated
+	vehicles.ride.on_unseated = _on_unseated
+
+	add_child(vehicles)
+
+
+## Makes a spawned prop a vehicle as well.
+##
+## [b]Configured before adopted, and the order is load-bearing.[/b] [DotVehicleWheeled]
+## walks the body's direct children for wheels once, when the chassis binds, and caches
+## what it finds — so a car whose wheels are built after the adoption has four wheels
+## that nothing drives, steers or brakes, with every number in its tunables correct.
+func _configure_vehicle(prop: DotPropInstance) -> void:
+	var body := prop.node as PlaygroundVehicle
+
+	if body == null:
+		# A delivered vehicle with its own scene, exactly as a delivered prop is. Its
+		# scene is its own business; all this game needs is a Node3D to adopt.
+		var plain := prop.node as Node3D
+
+		if plain == null:
+			DotLog.error(CHANNEL, "a vehicle's scene is not a Node3D", {
+				"vehicle": String(prop.def.id), "scene": prop.def.scene_path
+			})
+			props.remove(prop.instance_id, DotPropSpawner.REASON_CLEANUP)
+			return
+	else:
+		body.configure(prop.def)
+
+	var vehicle_id := PlaygroundVehicles.vehicle_id_of(prop.def)
+	var vehicle := vehicles.adopt(prop.node as Node3D, vehicle_id, prop.owner_id)
+
+	if vehicle == null:
+		# Loud, and the prop goes with it. A body that is a vehicle in the catalogue and
+		# not one in the world is a car that will not drive, sitting there being a crate
+		# — which sends the next person to the handling code.
+		DotLog.error(CHANNEL, "a vehicle would not be adopted", {
+			"prop": String(prop.def.id), "vehicle": String(vehicle_id)
+		})
+		props.remove(prop.instance_id, DotPropSpawner.REASON_CLEANUP)
+		return
+
+	if body != null:
+		body.vehicle_def = vehicle.def
+
+
+## Whoever is in a vehicle stops being a player who walks.
+##
+## [b]The controller is turned OFF, not ignored.[/b] A controller still simulating a
+## player parented into a moving vehicle writes its own answer into the state every tick
+## and the two fight: the movement pushes the body one way, the vehicle carries the node
+## the other, and the result reads as the vehicle shaking itself apart. [method
+## PlaygroundPlayer.set_riding] is the switch; [method _carry_riders] is what keeps the
+## replicated state honest while it is off.
+func _on_seated(
+	rider_id: StringName, vehicle: DotVehicleInstance, seat: DotVehicleSeat
+) -> void:
+	var player: PlaygroundPlayer = players.get(rider_id)
+
+	if player == null:
+		return
+
+	player.set_riding(true)
+
+	# The run goes, and it is not optional: a timed course driven in a car is not a run
+	# anybody can compare with one that was walked, and dot-timer has no idea a vehicle
+	# exists. Stopping it is the same call a teleport makes, for the same reason.
+	if player.timer != null:
+		player.timer.stop(DotTimer.REASON_TELEPORT)
+
+	# A physics gun cannot hold a prop from inside a car. Not a rule about vehicles: the
+	# tools reach from the eye and the eye has just moved, so whatever was on the end of
+	# the beam is now somewhere the player never aimed.
+	if player.phys_gun != null:
+		player.phys_gun.release()
+	if player.grav_gun != null:
+		player.grav_gun.drop()
+
+	DotLog.debug(CHANNEL, "a player got in", {
+		"player": String(rider_id), "vehicle": String(vehicle.def.id), "seat": String(seat.id)
+	})
+
+
+func _on_unseated(
+	rider_id: StringName,
+	_vehicle: DotVehicleInstance,
+	_seat: DotVehicleSeat,
+	at: Vector3
+) -> void:
+	var player: PlaygroundPlayer = players.get(rider_id)
+
+	if player == null:
+		return
+
+	player.set_riding(false)
+
+	# Put down where the sweep said there was room, through the controller's own state
+	# rather than by moving the node: the movement reads position from the state and
+	# would put them straight back otherwise. `teleport` is the one call that sets both.
+	player.teleport(at)
+
+
+## Keeps a riding player's movement state on the seat they are sitting in.
+##
+## [b]The half that is invisible until somebody watches from another machine.[/b] The
+## rider's NODE is carried by the vehicle, because dot-vehicle reparents it — but
+## everything that reads a player reads [code]controller.state.position[/code]: the
+## timer, the NPC candidate list, the HUD, and above all [PlaygroundPlayerNet], which
+## replicates the movement state and nothing else. Without this a passenger is drawn on
+## everybody else's screen at the spot where they got in, for the whole journey, while
+## being perfectly correct on their own.
+##
+## Run AFTER the vehicles have ticked and before the timers are fed, which is the same
+## "time the tick with the position the move produced" rule the players already follow.
+func _carry_riders() -> void:
+	if vehicles == null or vehicles.ride.rider_count() == 0:
+		return
+
+	for id in players:
+		var player: PlaygroundPlayer = players[id]
+
+		if not player.riding:
+			continue
+
+		var vehicle := vehicles.vehicle_of_rider(id)
+
+		if vehicle == null:
+			continue
+
+		player.adopt_ride(player.global_position, vehicle.velocity())
+
+
 func _build_npc_senses() -> void:
 	npc_senses = DotNpcSenses.new()
 
@@ -584,6 +768,18 @@ func _rebuild_npc_candidates() -> void:
 ## emitted BEFORE the node is freed, which is exactly so a listener holding a
 ## reference can let go while it still exists.
 func _on_prop_removed(prop: DotPropInstance, _reason: StringName) -> void:
+	# A vehicle first, because it may still have people in it. `remove` evacuates them —
+	# forcing the exit, because a car being deleted is exactly the case where there may
+	# be nowhere to stand — and leaves the node alone, since dot-props owns it.
+	if PlaygroundSpawnables.kind_of(prop.def) == PlaygroundSpawnables.Kind.VEHICLE:
+		# Found by NODE, not by the prop's instance id. dot-props and dot-vehicle both
+		# key their tables on "an instance id" and there is nothing making the two the
+		# same number; the node is what both of them actually agree about.
+		var riding_vehicle := vehicles.vehicle_for_node(prop.node) if vehicles != null else null
+
+		if riding_vehicle != null:
+			vehicles.remove(riding_vehicle.instance_id, DotVehicleSpawner.REASON_CLEANUP)
+
 	var entity := prop.node as PlaygroundEntity
 
 	if entity == null:
@@ -732,6 +928,24 @@ func remove_player(id: StringName) -> void:
 	# away keeps their votes while the threshold falls with the player count, so a
 	# map ends on the votes of people who are no longer there.
 	maps.time_limit.unrock(id)
+
+	# Out of the car before anything else, and forced. A player who disconnects while
+	# riding leaves a node stowed inside a vehicle and a rider id the ride will never
+	# clear — so the seat stays occupied for the rest of the round and the id can never
+	# enter anything again. Forced because there may be nowhere legal to stand, and the
+	# alternative to putting them somewhere is not putting them anywhere.
+	if vehicles != null and vehicles.ride.is_riding(id):
+		var riding := vehicles.vehicle_of_rider(id)
+
+		if riding != null:
+			vehicles.ride.exit(riding, id, true)
+
+	# Their vehicles are DISOWNED rather than removed, which is dot-vehicle's rule and
+	# the opposite of dot-props'. A prop is a thing somebody built; a vehicle is a thing
+	# somebody parked, usually with other people in it, and deleting it deletes the car
+	# three passengers are riding in.
+	if vehicles != null:
+		vehicles.owner_left(id)
 
 	# The prop spawner first: it may free nodes, and doing it after the player's own
 	# teardown means a physics gun holding one of them is already gone.
@@ -912,6 +1126,104 @@ func _on_map_over(_map: DotMapDef, reason: StringName) -> void:
 
 
 ## Registers a rock-the-vote from a player.
+# --- Vehicles ---------------------------------------------------------------
+
+## Turns each driver's movement keys into what their vehicle is being asked for.
+##
+## [b]The mapping is here and not in dot-vehicle, and that is where it belongs.[/b] A
+## [DotVehicleCommand] is built by the game from a keyboard, a gamepad, a touch layout or
+## a bot; the addon deliberately has no input at all. Reusing [DotFpsCommand] rather than
+## adding a second wire format is the other half of the same decision — a client already
+## sends one of those every tick, it is already sanitised, already replayed by the
+## predictor and already quantised, and a driver's throttle is exactly as much a per-tick
+## intent as a walk is.
+func _drive_vehicles() -> void:
+	if vehicles == null or vehicles.ride.rider_count() == 0:
+		return
+
+	for id in players:
+		var player: PlaygroundPlayer = players[id]
+
+		if not player.riding:
+			continue
+
+		var vehicle := vehicles.vehicle_of_rider(id)
+
+		if vehicle == null or vehicle.driver() != id:
+			# A passenger's keys do nothing, and the refusal is dot-vehicle's anyway:
+			# `set_command` checks the driver on the server on every command, because a
+			# client is a program the player can edit and driving from the back seat is
+			# what that hole would give them.
+			continue
+
+		vehicles.set_command(vehicle.instance_id, id, drive_command(player.pending_command()))
+
+
+## One tick of driving, from one tick of movement input.
+##
+## Static and public because it is the whole mapping, and a suite that had to build a
+## player to test it would be testing something else.
+static func drive_command(move: DotFpsCommand) -> DotVehicleCommand:
+	var cmd := DotVehicleCommand.new()
+
+	if move == null:
+		return cmd
+
+	# W and S. `move.y` is forward in DotFpsCommand and +1 is forward in
+	# DotVehicleCommand, so this is not a coincidence worth inverting.
+	cmd.throttle = move.move.y
+	# A and D. `move.x` strafes right and +1 steers right.
+	cmd.steer = move.move.x
+
+	# Crouch brakes and jump is the handbrake. Both are chosen so a player who gets into
+	# a car with their fingers where they were still has a brake under one of them.
+	cmd.brake = 1.0 if move.is_pressed(DotFpsCommand.BUTTON_CROUCH) else 0.0
+	cmd.handbrake = move.is_pressed(DotFpsCommand.BUTTON_JUMP)
+
+	cmd.aim_yaw = deg_to_rad(move.yaw)
+	cmd.aim_pitch = deg_to_rad(move.pitch)
+
+	return cmd.sanitise()
+
+
+## The nearest vehicle a player could get into, or null.
+##
+## [b]Measured from the eye and not from the feet.[/b] A player standing beside a car is
+## about 1.7 m above the point their body reports, and a reach measured from there is a
+## reach that fails while they are looking straight at the door.
+func vehicle_near(player_id: StringName, reach: float = 3.5) -> DotVehicleInstance:
+	var player: PlaygroundPlayer = players.get(player_id)
+
+	if player == null or vehicles == null:
+		return null
+
+	return vehicles.nearest_free(player.eye_position(), reach)
+
+
+## Gets a player into whatever they are standing next to, or out of what they are in.
+##
+## [b]One entry point for both, because the player pressed one key.[/b] A game with
+## separate "enter" and "exit" calls has a client deciding which one to send, and a
+## client that guesses wrong asks to get into the car it is already in.
+func use_vehicle(player_id: StringName) -> DotResult:
+	var player: PlaygroundPlayer = players.get(player_id)
+
+	if player == null or vehicles == null:
+		return DotResult.fail(DotError.CODE_STATE, "No such player.")
+
+	var riding := vehicles.vehicle_of_rider(player_id)
+
+	if riding != null:
+		return vehicles.ride.exit(riding, player_id)
+
+	var near := vehicle_near(player_id)
+
+	if near == null:
+		return DotResult.fail(DotError.CODE_STATE, "There is nothing to get into.")
+
+	return vehicles.ride.enter(near, player_id, player)
+
+
 func rock_the_vote(player_id: StringName) -> bool:
 	return maps.rock_the_vote(player_id, players.size())
 

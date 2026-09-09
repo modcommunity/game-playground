@@ -37,6 +37,8 @@ enum Kind {
 	FINISH,
 	## Text for everyone, or for one player: a refusal, a budget, a vote result.
 	NOTICE,
+	## A player got into or out of a vehicle.
+	SEAT,
 }
 
 enum Ask {
@@ -60,6 +62,13 @@ enum Ask {
 	RTV,
 	## Put me on this style (index into the server's ordered table).
 	STYLE,
+	## Get me into whatever I am standing next to, or out of what I am in.
+	##
+	## [b]One ask for both, because the player pressed one key.[/b] Two asks would put a
+	## client in charge of deciding which it is, and a client that guesses wrong asks to
+	## get into the car it is already sitting in — which the server then refuses, so the
+	## symptom is a use key that stops working once you are in something.
+	USE_VEHICLE,
 }
 
 ## Every decoder returns an `ok` alongside its fields, and every caller checks it.
@@ -237,6 +246,37 @@ static func read_weapon(r: DotNetReader) -> Dictionary:
 	var player_id := r.read_varint()
 	var weapon_id := r.read_string(ID_BYTES)
 	return {"player_id": player_id, "weapon_id": StringName(weapon_id), "ok": r.ok()}
+
+
+## Who is in what, and where. Sent to everybody, because a client draws other people
+## sitting in cars and has to stop drawing them walking.
+##
+## [param seat_index] is the index into the vehicle definition's own seat list rather
+## than the seat's id: the client has the same catalogue and a byte is a byte, where an
+## id is up to sixty-four of them per player per journey.
+static func write_seat(
+	player_id: int, vehicle_net_id: int, seat_index: int, seated: bool
+) -> PackedByteArray:
+	var w := _w()
+	w.write_varint(player_id)
+	w.write_varint(vehicle_net_id)
+	w.write_uint(clampi(seat_index, 0, 255), 8)
+	w.write_bool(seated)
+	return w.to_bytes()
+
+
+static func read_seat(r: DotNetReader) -> Dictionary:
+	var player_id := r.read_varint()
+	var vehicle_net_id := r.read_varint()
+	var seat_index := r.read_uint(8)
+	var seated := r.read_bool()
+	return {
+		"player_id": player_id,
+		"vehicle_net_id": vehicle_net_id,
+		"seat_index": seat_index,
+		"seated": seated,
+		"ok": r.ok(),
+	}
 
 
 # --- Maps ------------------------------------------------------------------

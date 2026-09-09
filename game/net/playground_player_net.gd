@@ -59,6 +59,15 @@ func _net_simulate(tick: int, delta: float) -> void:
 	if identity != null and identity.is_authoritative:
 		if bridge != null:
 			bridge.ensure_game_ticked(tick)
+	elif player.riding:
+		# A rider is not predicted, because a rider is not walking. The controller is the
+		# thing that would be predicting, and while its owner is in a vehicle it has no
+		# answer to predict: the vehicle's position comes from the server, it is not
+		# reproducible across machines, and a controller simulating on top of it fights
+		# every snapshot at a metre a time. The command is still applied so the driver's
+		# keys are in the input the predictor sends — which is the whole of what a
+		# driving client does.
+		player.controller.apply_command(last_move.duplicate_command())
 	else:
 		player.controller.apply_command(last_move.duplicate_command())
 		player.controller.simulate_tick(tick, delta)
@@ -83,7 +92,11 @@ func _net_state_applied(tick: int) -> void:
 	# client is showing". Moving it here makes the measured error the whole replay
 	# distance and the correction rate reads as if every snapshot snapped. Both
 	# HungryPieceNet and G2GPlayerNet shipped with that line.
-	if identity == null or not identity.is_predicted():
+	# ...unless they are riding, when there is no replay to spoil: nothing was predicted,
+	# so the server's answer IS what the client should be showing. Without this the local
+	# player's node — and the camera under it — stays where they got in, and the player
+	# watches the car drive away from inside their own head.
+	if identity == null or not identity.is_predicted() or player.riding:
 		player.global_position = player.controller.state.position
 
 

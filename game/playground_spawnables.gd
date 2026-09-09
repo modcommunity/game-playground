@@ -39,6 +39,13 @@ enum Kind {
 	PROP,
 	## A prop with a script attached at spawn, ticked by the simulation.
 	ENTITY,
+	## A prop that is also a [DotVehicleInstance]: it has seats and it drives.
+	##
+	## [b]Still a prop, and that is the decision.[/b] It counts against the same budget,
+	## it is on the same undo stack, it goes when its owner leaves, and a gravity gun can
+	## punt it — because a car you cannot punt is not a sandbox car. What being a vehicle
+	## adds is a chassis and the handover, and both are dot-vehicle's.
+	VEHICLE,
 }
 
 
@@ -55,6 +62,8 @@ static func kind_of(def: DotPropDef) -> Kind:
 	match str(def.meta.get("kind", "prop")).to_lower():
 		"entity", "npc":
 			return Kind.ENTITY
+		"vehicle":
+			return Kind.VEHICLE
 		_:
 			return Kind.PROP
 
@@ -213,4 +222,40 @@ static func catalogue() -> DotPropCatalogue:
 		entity.meta = meta
 		out.add(entity)
 
+	for vehicle in PlaygroundVehicles.catalogue().vehicles:
+		out.add(_vehicle_prop(vehicle))
+
 	return out
+
+
+## The prop definition a vehicle is spawned through.
+##
+## [b]Derived from the vehicle definition, never written twice.[/b] It is the same
+## "one description, three representations" rule the maps follow: the mass a physics gun
+## checks and the mass the chassis puts on the rigid body are the SAME number, read from
+## the tunables, so a catalogue saying 620 kg over a chassis saying 900 is a state this
+## build cannot reach. Two hand-kept copies is exactly the shape that gave dot-props a
+## prop a gun refused for being too heavy and a gravity gun threw like a beach ball.
+static func _vehicle_prop(vehicle: DotVehicleDef) -> DotPropDef:
+	var def := DotPropDef.make(vehicle.id, PlaygroundVehicles.SCENE)
+	def.display_name = vehicle.name_or_id()
+	def.category = &"vehicles"
+	def.mass = vehicle.tuning().mass
+	def.cost = vehicle.cost
+	def.size = DotPropDef.Size.LARGE
+
+	var meta := {
+		"kind": "vehicle",
+		"vehicle": String(vehicle.id),
+		"shape": "box",
+	}
+
+	# Assembled rather than assigned, exactly as an entity's is: the vehicle's own
+	# fields — extent, colour, the wheel geometry — come across, and the three keys
+	# above cannot be overwritten by one of them by accident.
+	for key in vehicle.meta:
+		if not meta.has(key):
+			meta[key] = vehicle.meta[key]
+
+	def.meta = meta
+	return def

@@ -65,6 +65,7 @@ func _run() -> void:
 		await _test_prop_request()
 		await _test_tools()
 		await _test_prop_removal()
+		await _test_vehicle_over_the_wire()
 		await _test_timer()
 		await _test_lossy()
 		await _test_leave()
@@ -714,6 +715,187 @@ func _test_prop_removal() -> void:
 		int(_client_bridge.describe()["props"]) == server_after,
 		"and the client stopped drawing it"
 	)
+
+
+## A vehicle spawned, driven and ridden with a real socket between the two ends.
+##
+## [b]This is the only thing that has ever run [DotVehicleNetSync] across a wire.[/b]
+## dot-vehicle's 122 checks and game-playground's own vehicle test both run in one
+## process, where the client IS the server's dictionary and every id agrees by
+## construction. What only this can catch: a spec dot-net will not accept, a wheel angle
+## that arrives as a body rotation, a seat mask nobody reads, a driver whose input is
+## applied on the client and never sent, and a rider drawn on the other machine at the
+## spot where they got in.
+func _test_vehicle_over_the_wire() -> void:
+	_section("a vehicle, over the socket")
+
+	var id := &"u%d" % SESSION
+	var driver := _server_player()
+
+	if driver == null:
+		return
+
+	var at := Vector3(-60.0, 1.2, -60.0)
+	driver.teleport(at + Vector3(2.5, 0.0, 0.0), 0.0)
+
+	_server_game.props.limits.spawn_interval = 0.0
+	var spawned := _server_game.props.spawn(&"buggy", id, at)
+	_check(spawned != null, "the server spawns a buggy")
+
+	if spawned == null:
+		return
+
+	var vehicle := _server_game.vehicles.vehicle_for_node(spawned.node)
+	_check(vehicle != null, "and adopts it as a vehicle")
+
+	if vehicle == null:
+		return
+
+	_exchange()
+	await _steps(8)
+
+	var mirror := _find_vehicle_node(_client_game)
+	_check(mirror != null, "the client builds its own copy of it")
+	_check(
+		mirror != null and mirror.get_node_or_null("Net") is PlaygroundVehicleNet,
+		"replicating through DotVehicleNetSync rather than as a plain prop"
+	)
+	_check(
+		mirror != null and (mirror as PlaygroundVehicle).wheel_count() == 4,
+		"with its wheels built on the client too"
+	)
+
+	# [b]The mirror is taken out of the physics world for the drive, and that is a fact
+	# about this HARNESS rather than about the game.[/b] Both halves are plain nodes in
+	# one scene tree, so they share one physics space — and the client's frozen copy of
+	# the car sits at exactly the coordinates the server's car is trying to drive out of.
+	# The first version of this test measured 1.24 m and a car reversing at half a metre
+	# a second, which was the server's buggy wedged against its own reflection. On two
+	# machines there is no such body.
+	if mirror != null:
+		mirror.collision_layer = 0
+		mirror.collision_mask = 0
+
+	# Let it settle onto its suspension. A raycast vehicle spawned in the air is falling,
+	# and "did it drive" measured through the drop measures the drop.
+	await _steps(40)
+
+	# The client asks. It has no seats, no exit sweep and no vehicle spawner: the server
+	# owns every one of those, and this is the same division a spawn already makes.
+	_client_bridge.ask_use_vehicle()
+	_exchange()
+	await _steps(6)
+
+	_check(vehicle.driver() == id, "the client's use key puts it in the driving seat")
+	_check(driver.riding, "the server stops walking them")
+	_check(
+		_client_player() != null and _client_player().riding,
+		"and the SEAT event stops the client predicting them",
+		"a predicted controller under a rider fights every snapshot"
+	)
+
+	var before := vehicle.position()
+	var mirror_before := mirror.global_position if mirror != null else Vector3.ZERO
+
+	# The driver's own input goes round trip. That is dot-vehicle's decision rather than
+	# a gap here: a rigid body is not reproducible across machines, so a predicted
+	# vehicle is a corrected vehicle and a correction on something a player is steering
+	# reads worse than the latency does.
+	await _steps(320, _forward())
+	_exchange()
+	await _steps(6)
+
+	var travelled := vehicle.position().distance_to(before)
+	# Deliberately well under what the car can do in 320 ticks. The client is on a
+	# different tick rate from the server here on purpose, so how many of its inputs land
+	# in a given wall-clock stretch is not a constant — and a threshold set at the
+	# measured figure is a test that fails on a loaded machine rather than on a bug.
+	_check(travelled > 3.0, "keys sent over the wire drive it", "%.2f m" % travelled)
+	_check(
+		vehicle.forward_speed() > 0.5, "forwards",
+		"%.2f m/s" % vehicle.forward_speed()
+	)
+	_check(
+		mirror != null and mirror.global_position.distance_to(mirror_before) > 2.0,
+		"and the client's copy went with it",
+		"%.2f m" % (mirror.global_position.distance_to(mirror_before) if mirror != null else -1.0)
+	)
+	_check(
+		mirror != null and mirror.global_position.distance_to(vehicle.position()) < 6.0,
+		"to roughly where the server has it",
+		"%.2f m apart" % (
+			mirror.global_position.distance_to(vehicle.position()) if mirror != null else -1.0
+		)
+	)
+
+	var net_behaviour := mirror.get_node_or_null("Net") as PlaygroundVehicleNet
+	_check(
+		net_behaviour != null and net_behaviour.seat_occupied(0),
+		"the seat mask says the driving seat is full"
+	)
+	_check(
+		net_behaviour != null and not net_behaviour.seat_occupied(1),
+		"and the passenger seat is not"
+	)
+
+	# The rider's own position, which is the half that is invisible in one process.
+	_check(
+		driver.controller.state.position.distance_to(vehicle.position()) < 4.0,
+		"the rider's replicated position is on the vehicle, not where they got in",
+		"%.2f m" % driver.controller.state.position.distance_to(vehicle.position())
+	)
+
+	# Turning the wheels. A client cannot derive this from anything else it is sent.
+	var turn := DotFpsCommand.new()
+	turn.move = Vector2(1.0, 1.0)
+	await _steps(60, turn)
+	_exchange()
+	await _steps(4)
+
+	_check(
+		net_behaviour != null and absf(net_behaviour.net_steering) > 2,
+		"the wheels' angle crosses the wire",
+		"quantised %d" % (net_behaviour.net_steering if net_behaviour != null else 0)
+	)
+
+	# Getting out, from the client, with the server owning the refusal.
+	var brake := DotFpsCommand.new()
+	brake.set_button(DotFpsCommand.BUTTON_CROUCH, true)
+	await _steps(200, brake)
+
+	_client_bridge.ask_use_vehicle()
+	_exchange()
+	await _steps(6)
+
+	_check(not driver.riding, "the same key takes them back out")
+	_check(vehicle.is_empty(), "leaving the car empty")
+	_check(
+		_client_player() != null and not _client_player().riding,
+		"and the client is predicting them again"
+	)
+	_check(
+		driver.global_position.distance_to(vehicle.position()) > 0.9,
+		"put down beside the car rather than inside it",
+		"%.2f m" % driver.global_position.distance_to(vehicle.position())
+	)
+
+	_server_game.props.remove(spawned.instance_id, DotPropSpawner.REASON_ADMIN)
+	_exchange()
+	await _steps(6)
+
+	_check(_find_vehicle_node(_client_game) == null, "and removing it removes the mirror")
+
+
+func _find_vehicle_node(game: Playground) -> PlaygroundVehicle:
+	var world: Node = game.world if game.world != null else game
+
+	for child in world.get_children():
+		var vehicle := child as PlaygroundVehicle
+
+		if vehicle != null:
+			return vehicle
+
+	return null
 
 
 func _test_timer() -> void:

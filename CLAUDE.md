@@ -940,6 +940,77 @@ at full throttle. The corner at (-60, -60) is the flat, empty one.
 `F` gets in and out. Not `E`, which already spawns here — and the day this game gains a use
 verb, the two want swapping together.
 
+## A price list, a camera, and being picked up
+
+Three addons joined in one pass, and each one is the answer to something this project had
+been asking without a way to say it.
+
+### `pg_shop`: a sandbox with prices
+
+**Off by default, and the cvar is the whole argument.** A sandbox where everything is free
+is a sandbox; a sandbox where a jeep costs four hundred credits is a *game*, and turning
+one into the other because an addon was installed is exactly what this family's rule about
+cvars exists to prevent.
+
+A free spawn menu has no pacing: the first thing anybody does is fill the map with the
+most expensive thing in it. A price list makes the wave mode worth playing — a wave pays,
+a jeep costs, a player who spent everything on turrets has to earn the next one — and it
+needs no new mechanic, because everything it wants is already here.
+
+**The price list is derived, not authored.** `PlaygroundShop.catalogue()` walks the prop
+catalogue and the weapon list and prices each entry from its mass, its size and its budget
+cost. A hand-written list of fourteen props is a list that goes stale the first time
+somebody adds a fifteenth, and this tree has shipped that bug four times in shell scripts
+alone.
+
+**Money is not the budget.** `DotPropLimits` still caps how much one player may have in
+the world, because a filled map is a server nobody else can play on, and credits must not
+be a way round that.
+
+The charge happens through `PlaygroundNetBridge.charge_fn` — a callable, not a reference to
+the shop, because the bridge is dot-net's half of this game and knows nothing about prices.
+Unset, everything is free, so no call site has to branch on whether a shop exists.
+
+### `pg_spec`: a sandbox is where watching is not about being dead
+
+The interesting thing on a server like this is usually what somebody else is *making*, and
+the answer to "what is that noise in the corner" is a camera. So the policy is the loosest
+of the three games that have one — anybody, alive or dead, may watch anybody, and roaming
+is on, because a free camera is how you look at a contraption from the outside.
+
+It tightens the moment `pg_arena` goes on. A living player watching a living one while they
+are shooting at each other is a wallhack, and that is exactly the moment this stops being a
+sandbox.
+
+### `pg_waves` also turns on being picked up
+
+**The wave mode is the only co-operative thing in this family, and this is what makes it
+one.** Until now a player killed by a wave respawned on a timer, so the other players
+carried on shooting and nothing about the wave was harder for having dropped somebody.
+Left 4 Dead's answer is the one every co-operative shooter since has copied: at zero health
+you go **down**, you bleed out over ninety seconds, and picking you up costs somebody five
+seconds of not shooting.
+
+**One place decides.** `PlaygroundArena.death_rule_fn` is asked before a death is reported,
+and a downed player is not reported to dot-match at all — the scoreboard has not lost
+anybody, the respawn queue must not start counting, and the kill feed would be announcing a
+death that did not happen. A game that asks "are we in a mode with incapacitation" at every
+damage site has as many copies of the rule as it has damage sites, and the copies drift.
+
+It shares the `pg_waves` cvar rather than having its own, because being killed by a wave is
+what being downed is *for*: a separate switch is an operator who turned the waves on and
+wonders why nobody is being picked up.
+
+### The bug the suite found
+
+**Two unknown players are zero metres apart.** `PlaygroundDowns._position_of` answers with a
+sentinel far away for somebody it does not know — which is right — but *two* unknown ids
+then sit at the **same** sentinel, so every distance check between them passes. A rescuer
+who does not exist revived a casualty who did not exist, and the only symptom was a player
+who should have bled out standing back up. `begin_revive` now refuses unless both are real
+players. It is this family's usual shape: a guard that is correct for one argument and
+wrong for two.
+
 ## Things deliberately not here
 
 - **A vehicle a client predicts, and a smoothing pass in the renderer.** dot-vehicle's

@@ -61,6 +61,9 @@ func _run() -> void:
 		await _test_moderation()
 		_test_arena()
 		_test_waves()
+		_test_shop()
+		_test_spectating()
+		await _test_downed()
 		await _test_progress()
 		_test_vote()
 		_test_identity()
@@ -811,6 +814,210 @@ func _test_waves() -> void:
 
 
 ## Statistics, and what they are worth.
+# --- The shop ---------------------------------------------------------------
+
+func _test_shop() -> void:
+	print("")
+	print("the shop")
+
+	var shop: PlaygroundShop = _module().get("shop")
+
+	_check(shop != null, "the shop is built")
+
+	if shop == null:
+		return
+
+	_check(
+		not shop.enabled,
+		"and is OFF by default",
+		"a sandbox where everything is free is a sandbox and one where a jeep costs "
+		+ "four hundred credits is a game; an addon must not turn one into the other"
+	)
+
+	# Free while it is off, and that is what makes it a layer a caller can consult
+	# unconditionally rather than a branch at every call site.
+	var free := shop.may_have(&"nobody", &"pg_crate")
+	_check(free.ok, "everything is free while it is off", str(free.error))
+
+	var prices := _run_command("pg_shop prices")
+	_check(prices.size() > 3, "the price list can be read", "%d lines" % prices.size())
+
+	# Derived from the catalogue rather than authored, which is why there are as many
+	# entries as there are props and weapons.
+	var expected := 0
+	if game.props != null and game.props.catalogue != null:
+		expected += game.props.catalogue.props.size()
+	expected += game.weapons.size()
+	_check(
+		shop.economy.shop.items.size() == expected,
+		"and has one entry per prop and weapon the game ships",
+		"%d against %d" % [shop.economy.shop.items.size(), expected]
+	)
+
+	var _on := _run_command("pg_shop on")
+	_check(shop.enabled, "it turns on")
+
+	var buyer := &"shopper"
+	shop.on_player_added(buyer)
+	_check(
+		shop.balance(buyer) == PlaygroundShop.START_CREDITS,
+		"a player starts with credits",
+		str(shop.balance(buyer))
+	)
+
+	# Something cheap, then everything, then something at all.
+	var cheapest := shop.economy.shop.for_team(1)[0]
+	var bought := shop.charge(buyer, cheapest.id)
+	_check(bought.ok, "and can buy the cheapest thing", str(bought.error))
+	_check(
+		shop.balance(buyer) == PlaygroundShop.START_CREDITS - cheapest.price,
+		"which costs what it says",
+		str(shop.balance(buyer))
+	)
+
+	var _spent := shop.award(buyer, -shop.balance(buyer), &"test")
+	var refused := shop.charge(buyer, cheapest.id)
+	_check(
+		not refused.ok,
+		"and cannot buy anything with nothing"
+	)
+	_check(
+		refused.error.message.contains("short"),
+		"with a message that says how short they are",
+		refused.error.message
+	)
+
+	shop.on_wave_kill(buyer)
+	_check(
+		shop.balance(buyer) == PlaygroundShop.WAVE_KILL,
+		"killing something the director sent pays",
+		str(shop.balance(buyer))
+	)
+
+	var _off := _run_command("pg_shop off")
+	_check(not shop.enabled, "and it turns off again")
+	_check(
+		shop.may_have(buyer, cheapest.id).ok,
+		"after which everything is free again even with an empty account"
+	)
+
+
+# --- Spectating -------------------------------------------------------------
+
+func _test_spectating() -> void:
+	print("")
+	print("spectating")
+
+	var spectate: PlaygroundSpectate = _module().get("spectate")
+
+	_check(spectate != null, "the spectate layer is built")
+
+	if spectate == null:
+		return
+
+	_check(
+		spectate.manager.rules.force_camera == 0,
+		"and anybody may watch anybody in a sandbox",
+		str(spectate.manager.rules.force_camera)
+	)
+	_check(
+		spectate.manager.rules.allow_roaming,
+		"with a free camera, which is how you look at a contraption from the outside"
+	)
+
+	# And the moment it stops being a sandbox.
+	spectate.set_fighting(true)
+	_check(
+		spectate.manager.rules.force_camera == 1
+		and not spectate.manager.rules.allow_roaming,
+		"and the policy tightens when the arena is on, because a living player "
+		+ "watching a living one while they shoot at each other is a wallhack"
+	)
+	spectate.set_fighting(false)
+	_check(
+		spectate.manager.rules.force_camera == 0,
+		"and loosens again when it is off"
+	)
+
+
+# --- Down rather than dead ---------------------------------------------------
+
+func _test_downed() -> void:
+	print("")
+	print("down rather than dead")
+
+	var downs: PlaygroundDowns = _module().get("downs")
+	var arena: PlaygroundArena = _module().get("arena")
+
+	_check(downs != null, "the downs layer is built")
+
+	if downs == null or arena == null:
+		return
+
+	_check(
+		not downs.enabled,
+		"and is off while the waves are",
+		"a sandbox where nobody dies is a very confusing bug"
+	)
+	_check(
+		arena.death_rule_fn.is_valid(),
+		"the arena asks it before reporting a death, so the rule lives in ONE place "
+		+ "rather than at every damage site"
+	)
+	_check(
+		StringName(str(downs.report_zero_health(&"nobody"))) == &"dead",
+		"and while it is off, zero health is death"
+	)
+
+	var _on := _run_command("pg_waves on")
+	_check(
+		downs.enabled,
+		"turning the waves on turns it on too, because being killed by a wave is what "
+		+ "it is for"
+	)
+
+	var victim := &"faller"
+	var helper := &"lifter"
+	_check(
+		StringName(str(downs.report_zero_health(victim))) == &"down",
+		"and now zero health is going down"
+	)
+	_check(downs.is_down(victim), "they are down")
+
+	var state := downs.state_of(victim)
+	_check(state != null and state.incaps == 1, "for the first time")
+	_check(
+		state != null and is_equal_approx(state.health, downs.effects.rules.downed_health),
+		"with a full bleed-out pool"
+	)
+
+	# Nobody near them: the revive is refused rather than silently doing nothing.
+	var far := downs.begin_revive(victim, helper)
+	_check(
+		not far.ok,
+		"and nobody picks them up from across the map",
+		str(far.error)
+	)
+
+	# Bleeding out is a death the scoreboard still has to hear about, and the arena's
+	# own path was skipped when they went down. This is the other end of that decision.
+	for _i in range(int(downs.effects.rules.bleed_out_ticks()) + 4):
+		downs.tick(1.0 / float(game.tick_rate))
+		game.tick_once(game.current_tick() + 1)
+
+	_check(
+		not downs.is_down(victim),
+		"and a player nobody picks up bleeds out"
+	)
+	_check(
+		downs.state_of(victim).is_dead(),
+		"and is dead rather than still lying there"
+	)
+
+	var _off := _run_command("pg_waves off")
+	_check(not downs.enabled, "turning the waves off turns it off")
+
+
 func _test_progress() -> void:
 	print("")
 	print("statistics and achievements")

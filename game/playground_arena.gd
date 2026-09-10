@@ -50,6 +50,15 @@ const SCORE_LIMIT := 25
 ## Somebody's health changed. Server side; the module tells the clients.
 signal health_changed(player_id: StringName, health: float, armour: float, by: StringName)
 
+## Asked before a death is reported: [code](victim) -> StringName[/code], answering
+## [code]&"down"[/code] or [code]&"dead"[/code].
+##
+## [b]One place decides, and that is the whole point of a callable here.[/b] A game that
+## asks "are we in a mode with incapacitation" at every damage site has as many copies of
+## the rule as it has damage sites, and the copies drift. Unset means everybody dies,
+## which is what a deathmatch is.
+var death_rule_fn: Callable = Callable()
+
 ## Somebody died. Server side.
 signal player_killed(victim: StringName, killer: StringName)
 
@@ -398,6 +407,15 @@ func entity_id_of(id: StringName) -> int:
 	return int(_entity_of_player.get(id, 0))
 
 
+## The other direction, which was missing.
+##
+## [PlaygroundDowns] needs it and would otherwise hash the player's name — a number that
+## is stable, plausible and **not** the one the health, the hitboxes and the kill feed
+## use, so a player who is down in one system is up in the other.
+func player_for_entity(entity_id: int) -> StringName:
+	return _player_of_entity.get(entity_id, &"") as StringName
+
+
 # --- The tick --------------------------------------------------------------
 
 ## One authoritative step, from the game's own tick.
@@ -529,6 +547,19 @@ func _on_killed(entity_id: int, damage: DotDamage) -> void:
 
 	if victim == &"":
 		return
+
+	# Down rather than dead, when something else has said so. A downed player is not
+	# reported to dot-match at all: the scoreboard has not lost anybody, the respawn
+	# queue must not start counting, and the kill feed would be announcing a death that
+	# did not happen.
+	if death_rule_fn.is_valid():
+		var what := StringName(str(death_rule_fn.call(victim)))
+
+		if what == &"down":
+			DotLog.debug(CHANNEL, "a player went down rather than dying", {
+				"player": String(victim), "by": String(killer),
+			})
+			return
 
 	# [b]Through dot-match's own kill report, so the scoreboard, the feed and the respawn
 	# queue all agree.[/b] A game that scored a kill itself and then queued a respawn

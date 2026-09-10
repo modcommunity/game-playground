@@ -50,3 +50,6 @@ Thumbs.db
 
 # Screenshots are evidence for a review, not assets
 /screenshots/
+/addons/dot_economy
+/addons/dot_effects
+/addons/dot_spectate

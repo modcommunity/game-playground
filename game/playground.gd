@@ -374,6 +374,16 @@ func tick_timers_only(tick: int) -> void:
 ## keeps its own rate to size a step, so changing the game's and leaving theirs runs
 ## the simulation at one rate and the movement at another — and the symptom is a
 ## player who is correct on their own screen and wrong everywhere else.
+## The tick this game is on.
+##
+## The same accessor `ArenaGame` and `G2GGame` both have, and this project did without
+## because every layer it had was handed the tick as an argument. A layer that is ticked
+## from the module rather than from `_simulate_tick` has no such argument, and reaching
+## for `_tick` from outside would be reaching past the underscore.
+func current_tick() -> int:
+	return _tick
+
+
 func set_tick_rate(rate: int) -> bool:
 	if rate <= 0 or rate == tick_rate:
 		return false

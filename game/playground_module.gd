@@ -42,6 +42,15 @@ var arena: PlaygroundArena = null
 ## NPCs the server releases, paced by a director. Also off by default.
 var waves: PlaygroundWaves = null
 
+## A price list over the spawn menu, when an operator has turned one on. `pg_shop`.
+var shop: PlaygroundShop = null
+
+## Watching somebody else build, fight, or drive into a wall.
+var spectate: PlaygroundSpectate = null
+
+## Down rather than dead, while the waves are on. The co-operative half.
+var downs: PlaygroundDowns = null
+
 ## Per-player statistics, and what they are worth.
 var progress: PlaygroundProgress = null
 
@@ -200,6 +209,22 @@ func _module_load() -> DotResult:
 		"pg_waves [on|off|clear] — NPCs the server releases",
 		DotAdminFlags.CHANGEMAP
 	)
+	# No flag: this is a player command rather than an administrative one, and
+	# `_on_chat_command` routes `!pg_spec` through the console like every other.
+	add_command(
+		"pg_spec", _cmd_spec,
+		"pg_spec [player|off|next] — watch somebody else", ""
+	)
+	add_command(
+		"pg_shop", _cmd_shop,
+		"pg_shop [on|off|prices] — a price list over the spawn menu",
+		DotAdminFlags.CHANGEMAP
+	)
+	add_command(
+		"pg_credits", _cmd_credits,
+		"pg_credits [player] [+amount] — what somebody has, and giving them some",
+		DotAdminFlags.CHANGEMAP
+	)
 	add_command(
 		"pg_vote", _cmd_vote,
 		"pg_vote [open|next|status] — what plays next", DotAdminFlags.CHANGEMAP
@@ -310,6 +335,12 @@ func _build_extras() -> DotResult:
 
 	arena.health_changed.connect(_on_health_changed)
 	arena.player_killed.connect(_on_player_killed)
+	arena.player_killed.connect(func(victim: StringName, killer: StringName) -> void:
+		shop.on_arena_kill(killer, victim)
+		var player: PlaygroundPlayer = game.players.get(victim, null)
+		var at := player.controller.state.position if player != null else Vector3.ZERO
+		spectate.on_death(victim, at, killer)
+	)
 	arena.clock_changed.connect(bridge.broadcast_match)
 
 	waves = PlaygroundWaves.new()
@@ -323,9 +354,73 @@ func _build_extras() -> DotResult:
 
 	# The director paces against real health when the arena is on, and against proximity
 	# alone when it is not. One callable rather than two code paths.
+	# Something the director sent has died, and somebody killed it. The wave mode is
+	# what makes a price list worth having: a wave pays, a jeep costs, and a player who
+	# spent everything on turrets has to earn the next one.
+	waves.spawner.died.connect(func(_npc: DotNpcInstance, by: StringName) -> void:
+		shop.on_wave_kill(by))
+
 	waves.health_fn = func(id: StringName) -> float:
 		var health := arena.health_of(id)
 		return health.fraction() if health != null else 1.0
+
+	shop = PlaygroundShop.new()
+	shop.name = "Shop"
+	add_child(shop)
+
+	var priced := shop.setup(game)
+
+	if not priced.ok:
+		return priced.wrap("The shop could not be set up")
+
+	# The bridge charges through this and knows nothing about prices. Unset it and
+	# everything is free, which is what this game was before there was a price list.
+	bridge.charge_fn = shop.charge
+
+	spectate = PlaygroundSpectate.new()
+	spectate.name = "Spectate"
+	add_child(spectate)
+
+	var watching := spectate.setup(game)
+
+	if not watching.ok:
+		return watching.wrap("Spectating could not be set up")
+
+	spectate.arena = arena
+
+	downs = PlaygroundDowns.new()
+	downs.name = "Downs"
+	add_child(downs)
+
+	var dropped := downs.setup(game)
+
+	if not dropped.ok:
+		return dropped.wrap("Incapacitation could not be set up")
+
+	downs.arena = arena
+
+	# The arena asks and the downs layer answers, so the rule lives in one place. Unset
+	# it and everybody dies, which is what a deathmatch is.
+	arena.death_rule_fn = downs.report_zero_health
+
+	# A downed player who bleeds out is a death the scoreboard and the respawn queue
+	# still have to hear about, and the arena's own path was skipped when they went
+	# down. This is the other end of that decision.
+	downs.died.connect(func(player_id: StringName, _reason: StringName) -> void:
+		if arena.enabled and player_id != &"":
+			arena.match_node.report_kill("", String(player_id), &"bleed_out", game.current_tick())
+	)
+
+	downs.revived.connect(func(player_id: StringName, _by: StringName, health: float) -> void:
+		var record := arena.health_of(player_id)
+		if record != null:
+			record.revive(clampf(health / PlaygroundArena.MAX_HEALTH, 0.05, 1.0))
+	)
+
+	# Being killed by a wave is what being downed is FOR, so the two switch together.
+	# The alternative — a separate cvar — is an operator who turned the waves on and
+	# wonders why nobody is being picked up.
+	downs.set_enabled(waves.is_enabled())
 
 	progress = PlaygroundProgress.new()
 	progress.name = "Progress"
@@ -630,6 +725,15 @@ func _physics_process(_delta: float) -> void:
 
 	if arena != null:
 		arena.tick(_tick, step)
+
+	if shop != null:
+		shop.tick(step)
+
+	if spectate != null:
+		spectate.tick(step)
+
+	if downs != null:
+		downs.tick(step)
 
 	if waves != null:
 		waves.tick(_tick, step)
@@ -1367,6 +1471,9 @@ func _cmd_arena(ctx: DotCmdContext) -> void:
 	match ctx.arg(0):
 		"on":
 			arena.set_enabled(true)
+			# A living player watching a living one while they are shooting at each
+			# other is a wallhack, and this is the moment it stops being a sandbox.
+			spectate.set_fighting(true)
 
 			# Everybody already here joins the fight. A match that only admitted people
 			# who connected *after* it started would be a match the server's existing
@@ -1377,6 +1484,7 @@ func _cmd_arena(ctx: DotCmdContext) -> void:
 			ctx.reply("The arena is on: %d fighting." % game.players.size())
 		"off":
 			arena.set_enabled(false)
+			spectate.set_fighting(false)
 			ctx.reply("The arena is off. This is a sandbox again.")
 		_:
 			ctx.reply_lines(arena.describe_lines())
@@ -1386,15 +1494,137 @@ func _cmd_waves(ctx: DotCmdContext) -> void:
 	match ctx.arg(0):
 		"on":
 			waves.set_enabled(true)
-			ctx.reply("Waves are on.")
+			# Being killed by a wave is what being downed is for, so the two switch
+			# together. A separate cvar is an operator who turned the waves on and
+			# wonders why nobody is being picked up.
+			downs.set_enabled(true)
+			ctx.reply("Waves are on, and a player at zero health goes down rather than dying.")
 		"off":
 			waves.set_enabled(false)
+			downs.set_enabled(false)
 			ctx.reply("Waves are off, and the map is cleared of them.")
 		"clear":
 			var gone := waves.spawner.clear_all()
 			ctx.reply("Cleared %d." % gone)
 		_:
 			ctx.reply_lines(waves.describe_lines())
+
+
+## `pg_spec` — watch somebody else.
+##
+## A sandbox is the one place where watching is not about being dead: the interesting
+## thing on a server like this is usually what somebody else is making, and the answer to
+## "what is that noise in the corner" is a camera.
+func _cmd_spec(ctx: DotCmdContext) -> void:
+	var session := ctx.session
+
+	if session == null:
+		ctx.reply("Only a player can watch somebody.")
+		return
+
+	var viewer := _player_id(session)
+
+	match ctx.arg(0):
+		"", "next":
+			var res := spectate.next_target(viewer)
+			ctx.reply(
+				("Watching %s." % String(spectate.target_of(viewer))) if res.ok
+				else res.error.message
+			)
+		"off", "stop":
+			spectate.stop(viewer)
+			ctx.reply("Back to your own view.")
+		_:
+			var wanted := _player_named(ctx.arg(0))
+
+			if wanted == &"":
+				ctx.reply("There is nobody called '%s' here." % ctx.arg(0))
+				return
+
+			var res := spectate.watch(viewer, wanted)
+			ctx.reply(
+				("Watching %s." % String(wanted)) if res.ok else res.error.message
+			)
+
+
+## A player id by display name, case-insensitively and by prefix.
+##
+## What every server in this genre does: `!pg_spec ad` finds Ada. The first match wins
+## and the order is the roster's, which is stable — the alternative is refusing an
+## ambiguous prefix, and a player who typed two letters and got "be more specific" types
+## three letters and gives up.
+func _player_named(text: String) -> StringName:
+	var wanted := text.strip_edges().to_lower()
+
+	if wanted == "":
+		return &""
+
+	for session in server.sessions():
+		var name := session.display_name.to_lower()
+		if name == wanted or name.begins_with(wanted):
+			return _player_id(session)
+
+	for id: Variant in game.players.keys():
+		var name := String(id).to_lower()
+		if name == wanted or name.begins_with(wanted):
+			return StringName(id)
+
+	return &""
+
+
+## `pg_shop` — turn the price list on, off, or read it.
+##
+## Off by default, and the cvar is the point: a sandbox where everything is free is a
+## sandbox, and one where a jeep costs four hundred credits is a game. Turning one into
+## the other because an addon was installed is what this family's rule about cvars
+## exists to prevent.
+func _cmd_shop(ctx: DotCmdContext) -> void:
+	match ctx.arg(0):
+		"on":
+			shop.set_enabled(true)
+			ctx.reply("The shop is on. Everything has a price now.")
+		"off":
+			shop.set_enabled(false)
+			ctx.reply("The shop is off. Take what you like.")
+		"prices":
+			if shop.economy == null or shop.economy.shop == null:
+				ctx.reply("There is no price list.")
+			else:
+				ctx.reply_lines(shop.economy.shop.describe_lines())
+		_:
+			ctx.reply_lines(shop.describe_lines())
+
+
+## `pg_credits` — read a balance, or hand somebody a few.
+func _cmd_credits(ctx: DotCmdContext) -> void:
+	var who := ctx.arg(0)
+
+	if who == "":
+		var lines := PackedStringArray()
+		for id: Variant in game.players.keys():
+			lines.append("%-20s %d" % [String(id), shop.balance(StringName(id))])
+		if lines.is_empty():
+			lines.append("Nobody is here.")
+		ctx.reply_lines(lines)
+		return
+
+	var target := _player_named(who)
+
+	if target == &"":
+		ctx.reply("There is nobody called '%s' here." % who)
+		return
+
+	var amount := ctx.arg(1)
+
+	if amount == "":
+		ctx.reply("%s has %d." % [String(target), shop.balance(target)])
+		return
+
+	var paid := shop.award(target, amount.to_int(), &"admin")
+	ctx.reply(
+		"%s now has %d (%s%d)."
+			% [String(target), shop.balance(target), "+" if paid >= 0 else "", paid]
+	)
 
 
 func _cmd_vote(ctx: DotCmdContext) -> void:

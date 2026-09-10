@@ -896,6 +896,25 @@ func _on_request(message: DotNetMessage) -> void:
 				_broadcast(PlaygroundEvents.Kind.JOIN, _join_body(session_id))
 
 
+## Asked before anything is spawned or given, and charged for if it is allowed.
+##
+## [code](player_id: StringName, thing_id: StringName) -> DotResult[/code]
+##
+## [b]A callable rather than a reference to the shop.[/b] The bridge is dot-net's half of
+## this game and knows nothing about prices; the shop lives on the module beside the
+## arena and the waves. Unset means everything is free, which is the sandbox this game
+## was before there was a price list — so a caller never has to branch on whether a shop
+## exists, and there is no second code path to keep in step.
+var charge_fn: Callable = Callable()
+
+
+## Charge for something, or say why not. Success when nothing is charging.
+func _charge(id: StringName, thing_id: StringName) -> DotResult:
+	if not charge_fn.is_valid():
+		return DotResult.success(null)
+	return charge_fn.call(id, thing_id) as DotResult
+
+
 ## Spawns in front of the player who asked, which is what the menu means by "spawn".
 ##
 ## The budget, the cooldown and the undo stack are the SPAWNER's, not this bridge's: a
@@ -913,6 +932,16 @@ func _spawn_for(id: StringName, prop_id: StringName) -> void:
 			PlaygroundEvents.write_notice(session_of(id), "No such prop: %s" % prop_id))
 		return
 
+	# Paid for first, and refused with a reason. A refusal that says nothing is the one
+	# thing a price list must not do: the player presses the button, nothing appears,
+	# and there is no way to tell it from a broken menu.
+	var paid := _charge(id, def.id)
+
+	if not paid.ok:
+		_tell(peer_for_player(session_of(id)), PlaygroundEvents.Kind.NOTICE,
+			PlaygroundEvents.write_notice(session_of(id), paid.error.message))
+		return
+
 	# Three metres in front of the eye, the same distance `pg_prop` uses. A player who
 	# spawns a crate expects it where they are looking, not at their feet.
 	var at := player.eye_position() + player.aim_direction() * 3.0
@@ -922,6 +951,13 @@ func _spawn_for(id: StringName, prop_id: StringName) -> void:
 func _give_weapon(session_id: int, id: StringName, weapon_id: StringName) -> void:
 	var player: PlaygroundPlayer = game.players.get(id)
 	if player == null or game.weapon_def(weapon_id) == null:
+		return
+
+	var paid := _charge(id, weapon_id)
+
+	if not paid.ok:
+		_tell(peer_for_player(session_id), PlaygroundEvents.Kind.NOTICE,
+			PlaygroundEvents.write_notice(session_id, paid.error.message))
 		return
 
 	_broadcast(PlaygroundEvents.Kind.WEAPON, PlaygroundEvents.write_weapon(session_id, weapon_id))

@@ -1757,12 +1757,14 @@ func _test_the_sandbox_and_its_course() -> void:
 			DotTimerTrack.MAIN,
 			DotTimerTrack.BONUS_FIRST,
 			DotTimerTrack.BONUS_FIRST + 1,
+			PgLobby.CIRCUIT_TRACK,
 		],
-		"the game can see all three tracks without being told about them",
+		"the game can see all four tracks without being told about them",
 		str(tracks)
 	)
 
 	_test_the_tower(playground, zones)
+	_test_the_circuit(playground, zones)
 
 	# The main track, exactly as before: walking about starts nothing.
 	player.timer.set_track(DotTimerTrack.MAIN)
@@ -1869,6 +1871,7 @@ func _test_the_sandbox_and_its_course() -> void:
 	)
 
 	await _walk_the_tower(player)
+	await _drive_the_circuit()
 
 	playground.remove_player(&"bot")
 	_check(playground.players.is_empty(), "a player can leave cleanly")
@@ -2383,3 +2386,312 @@ func _test_the_client_boots() -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 
+
+
+# --- The circuit -----------------------------------------------------------
+
+
+## Bonus 3, the driving track.
+##
+## [b]This is the first thing in the family that puts a VEHICLE through the timer, and
+## the first map built at a car's scale.[/b] Two halves, and the second is the one that
+## could not have been written before tonight: the geometry, which is checked the same
+## way the tower's is, and a real buggy driven a real lap under throttle and steering,
+## through every stage, to a finish.
+func _test_the_circuit(playground: Playground, zones: DotTimerZoneSet) -> void:
+	var track := PgLobby.CIRCUIT_TRACK
+
+	_check(
+		zones.of_kind(DotTimerZone.Kind.START, track).size() == 1
+		and zones.of_kind(DotTimerZone.Kind.END, track).size() == 1,
+		"the circuit on bonus 3 has one grid and one finish line"
+	)
+
+	var stages := zones.of_kind(DotTimerZone.Kind.STAGE, track)
+	_check(stages.size() == 3, "and three splits", "%d" % stages.size())
+
+	# The trick the whole track depends on: a loop whose start and finish are the same
+	# place finishes on the tick it starts. A check that only counted the zones would
+	# pass for exactly that map.
+	var grid: Array = zones.of_kind(DotTimerZone.Kind.START, track)
+	var line: Array = zones.of_kind(DotTimerZone.Kind.END, track)
+	var grid_zone: DotTimerZone = grid[0]
+	var line_zone: DotTimerZone = line[0]
+	var grid_box := AABB(
+		grid_zone.centre() - grid_zone.size() * 0.5, grid_zone.size()
+	)
+	var line_box := AABB(
+		line_zone.centre() - line_zone.size() * 0.5, line_zone.size()
+	)
+
+	_check(
+		not grid_box.intersects(line_box),
+		"and the finish line does NOT overlap the grid, which is what makes a LAP",
+		"a loop timed from one box to itself finishes on the tick it starts"
+	)
+
+	# Every zone on the road, not beside it. The road is 12 m wide and the zones are
+	# built from the same `circuit_point`, so a zone off the tarmac means the two
+	# descriptions have come apart — which is the failure this project builds maps in
+	# code to make impossible, and is worth asserting rather than assuming.
+	var off := 0
+
+	var on_road: Array[DotTimerZone] = []
+	on_road.append_array(zones.of_kind(DotTimerZone.Kind.START, track))
+	on_road.append_array(zones.of_kind(DotTimerZone.Kind.END, track))
+	on_road.append_array(zones.of_kind(DotTimerZone.Kind.STAGE, track))
+
+	for zone in on_road:
+		var centre: Vector3 = zone.centre()
+		var nearest := _nearest_circuit_distance(Vector3(centre.x, 0.0, centre.z))
+
+		if nearest > PgLobby.CIRCUIT_WIDTH * 0.5:
+			off += 1
+
+	_check(off == 0, "and every zone sits on the road it was drawn from",
+		"%d off the tarmac" % off)
+
+	# The lap is long enough to be a lap. A circuit a car crosses in four seconds is a
+	# roundabout.
+	_check(
+		PgLobby.circuit_length() > 350.0,
+		"the lap is a lap",
+		"%.0f m" % PgLobby.circuit_length()
+	)
+
+	# Clear of everything else on the plate. The jump course, the tower and the
+	# staircase all live inside the inner kerb, and a circuit that clipped one of them
+	# would be a car driving through a leaderboard.
+	var inner := PgLobby.CIRCUIT_HALF - PgLobby.CIRCUIT_WIDTH * 0.5 \
+		- PgLobby.CIRCUIT_KERB_WIDTH
+
+	_check(
+		absf(PgLobby.COURSE_X) < inner and absf(PgLobby.TOWER_X) - PgLobby.TOWER_RADIUS < inner,
+		"and it runs round the jump course and the tower rather than through them",
+		"inner edge %.1f m" % inner
+	)
+
+
+## How far [param at] is from the nearest point on the centreline.
+##
+## Sampled rather than solved. The centreline is four straights and four arcs and a
+## closed-form nearest point is more arithmetic than this test is worth; 512 samples
+## over a 387 m lap is 76 cm apart, which is well inside the 6 m half-width being
+## asserted against.
+func _nearest_circuit_distance(at: Vector3) -> float:
+	var length := PgLobby.circuit_length()
+	var best := INF
+
+	for i in range(512):
+		var point: Array = PgLobby.circuit_point(length * float(i) / 512.0)
+		best = minf(best, at.distance_to(point[0] as Vector3))
+
+	return best
+
+
+## A buggy actually drives the lap.
+##
+## [b]Autopiloted along the centreline rather than driven in a straight line.[/b] A
+## test that held the throttle down would prove the road exists and nothing else: it is
+## the CORNERS that say whether the radius is one the steering can hold, whether the
+## kerbs are drivable, and whether the segments meet without a seam a wheel catches on.
+## The autopilot is nine lines because [method PgLobby.circuit_point] is the same
+## function the road was built from, which is the whole argument for building maps in
+## code.
+func _drive_the_circuit() -> void:
+	var track := PgLobby.CIRCUIT_TRACK
+	var driver: PlaygroundPlayer = playground.players[&"bot"]
+
+	_check(driver.timer.set_track(track), "the circuit's track switches")
+
+	playground.spawn_player(&"bot")
+
+	var grid: Array = PgLobby.circuit_point(0.0)
+	var at: Vector3 = grid[0]
+
+	_check(
+		driver.controller.state.position.distance_to(at) < 6.0,
+		"and puts the driver on the grid",
+		"%.1f m off" % driver.controller.state.position.distance_to(at)
+	)
+
+	var spawned := playground.props.spawn(
+		&"buggy", &"bot", at + Vector3(0.0, 1.2, 0.0)
+	)
+
+	_check(spawned != null, "a buggy spawns on the line")
+
+	if spawned == null:
+		return
+
+	var car := playground.vehicles.vehicle_for_node(spawned.node)
+
+	if car == null:
+		_check(false, "and is a vehicle")
+		return
+
+	# Point it down the road. A car dropped onto the grid keeps whatever rotation the
+	# prop spawner gave it, and a lap that starts by reversing into the kerb measures
+	# the autopilot rather than the track.
+	var forward: Vector3 = grid[1]
+	(car.node as Node3D).global_transform = Transform3D(
+		Basis.looking_at(forward, Vector3.UP),
+		at + Vector3(0.0, 1.2, 0.0)
+	)
+
+	for _i in range(30):
+		await get_tree().physics_frame
+
+	_check(playground.use_vehicle(&"bot").ok, "the bot gets in")
+
+	# The rule this map needed: getting in must NOT cancel the run on a driven track.
+	# It is asserted before the lap because a lap that never started would look
+	# identical to one that was never timed.
+	_check(
+		playground.current_map_node().track_is_driven(track),
+		"the map says bonus 3 is driven"
+	)
+	_check(
+		not playground.current_map_node().track_is_driven(DotTimerTrack.BONUS_FIRST),
+		"and that bonus 1 is not, which is what stops a jump course being driven round"
+	)
+
+	var seen: Array[int] = []
+	driver.timer.stage_reached.connect(
+		func(number: int, _split: float) -> void: seen.append(number)
+	)
+
+	var finished: Array[float] = []
+	driver.timer.run_finished.connect(
+		func(run: DotTimerRun) -> void: finished.append(run.time())
+	)
+
+	var command := DotFpsCommand.new()
+	var progress := 0.0
+	var stalled := 0
+
+	# Twelve thousand ticks is roughly ninety simulated seconds, which is three times
+	# what a clean lap takes. The loop exits on the finish, so the ceiling only ever
+	# bounds a car that got stuck.
+	for _i in range(12000):
+		var here := car.position()
+		progress = _circuit_progress(here, progress)
+
+		# Aim fifteen metres up the road. Far enough that the car is not sawing at the
+		# wheel on a straight, near enough that it turns in before the corner rather
+		# than after it.
+		var target: Array = PgLobby.circuit_point(progress + 15.0)
+		var to_target: Vector3 = ((target[0] as Vector3) - here).normalized()
+		var heading := -(car.node as Node3D).global_basis.z
+		var right := (car.node as Node3D).global_basis.x
+
+		# A positive `move.x` steers right, the same axis a walking player strafes on.
+		command.move = Vector2(
+			clampf(to_target.dot(right) * 3.0, -1.0, 1.0),
+			1.0 if heading.dot(to_target) > 0.2 else 0.4
+		)
+
+		driver.controller.apply_command(command.duplicate_command())
+		await get_tree().physics_frame
+
+		if not finished.is_empty():
+			break
+
+		if car.speed() < 0.5:
+			stalled += 1
+		else:
+			stalled = 0
+
+		if stalled > 600:
+			break
+
+	_check(
+		not finished.is_empty(),
+		"a buggy drives the whole lap and crosses the line",
+		"%.1f m round the centreline" % progress
+	)
+	_check(
+		seen == [1, 2, 3],
+		"through all three splits, in order",
+		str(seen)
+	)
+	_check(
+		not finished.is_empty() and finished[0] > 8.0,
+		"and the lap took a lap's worth of time",
+		"%.2f s" % (finished[0] if not finished.is_empty() else -1.0)
+	)
+
+	# Getting out mid-lap ends the run, which is the mirror of the rule above and the
+	# half that would otherwise let somebody walk the last corner.
+	# The bot is still sitting in the car it just finished in, so put it down first.
+	# `use_vehicle` is a toggle and calling it on a rider is how a player gets out.
+	if playground.vehicles.ride.is_riding(&"bot"):
+		var park := DotFpsCommand.new()
+		park.set_button(DotFpsCommand.BUTTON_CROUCH, true)
+		await _drive(&"bot", park, 300)
+		playground.use_vehicle(&"bot")
+		await get_tree().physics_frame
+
+	# Both back on the grid, stationary, pointing down the road.
+	var line_up: Array = PgLobby.circuit_point(0.0)
+	var start_at: Vector3 = line_up[0]
+	(car.node as Node3D).global_transform = Transform3D(
+		Basis.looking_at(line_up[1] as Vector3, Vector3.UP),
+		start_at + Vector3(0.0, 1.2, 0.0)
+	)
+	car.body().linear_velocity = Vector3.ZERO
+	car.body().angular_velocity = Vector3.ZERO
+
+	driver.timer.set_track(track)
+	playground.spawn_player(&"bot")
+
+	for _i in range(30):
+		await get_tree().physics_frame
+
+	_check(playground.use_vehicle(&"bot").ok, "the bot gets back in")
+
+	var rolling := DotFpsCommand.new()
+	rolling.move = Vector2(0.0, 1.0)
+	await _drive(&"bot", rolling, 200)
+
+	_check(
+		driver.timer.run != null and driver.timer.run.is_running(),
+		"a second lap is under way"
+	)
+
+	var stop := DotFpsCommand.new()
+	stop.set_button(DotFpsCommand.BUTTON_CROUCH, true)
+	await _drive(&"bot", stop, 300)
+
+	# `use_vehicle` is a toggle: in when out, out when in. The same key a player presses.
+	# It is refused above `max_exit_speed`, which is why the brake above is not
+	# decoration.
+	var got_out := playground.use_vehicle(&"bot")
+	_check(got_out.ok, "the bot gets out", "%.2f m/s" % car.speed())
+	await get_tree().physics_frame
+
+	_check(
+		driver.timer.run == null or not driver.timer.run.is_running(),
+		"and getting out of the car ends it"
+	)
+
+
+## Where [param at] is round the lap, searched forward from [param from].
+##
+## Forward-only, which matters: a car on the +Z straight is metres from BOTH the first
+## and the last leg, and a nearest-point search over the whole lap snaps a car about to
+## finish back to the grid it left. The window is generous enough to survive a spin.
+func _circuit_progress(at: Vector3, from: float) -> float:
+	var best := from
+	var best_distance := INF
+
+	for i in range(120):
+		var s := from + float(i) * 0.5
+		var point: Array = PgLobby.circuit_point(s)
+		var distance := at.distance_to(point[0] as Vector3)
+
+		if distance < best_distance:
+			best_distance = distance
+			best = s
+
+	return best

@@ -55,3 +55,18 @@ func spawn_yaw_for(track: int) -> float:
 			return spawn.destination_yaw
 
 	return 0.0
+
+
+## Whether [param track] is meant to be driven rather than run.
+##
+## [b]Default false, which is every map that existed before there were cars.[/b]
+## [code]Playground._on_seated[/code] cancels a run when a player gets into a vehicle,
+## because a foot course driven round in a buggy is not a time anybody can compare with
+## one that was jumped — and dot-timer has no idea a vehicle exists, so nothing below
+## this can tell the difference.
+##
+## A circuit inverts that: the car is the point, and getting OUT of it mid-lap is the
+## thing that should end the run. A map says which of its tracks are which, because the
+## map is the only thing that knows. See `pg_lobby`'s bonus 3.
+func track_is_driven(_track: int) -> bool:
+	return false

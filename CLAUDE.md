@@ -515,6 +515,65 @@ zone file a *delivered* map ships, so the declaration would be the half that is 
 exactly when it matters. `MAIN` is always in the result even with no zones on it,
 because a sandbox is a legitimate track and a player has to be able to get back to it.
 
+## Bonus 3 is a circuit, and a track now says whether it is driven
+
+`pg_lobby` gained a **driving circuit** round the outside of the plate: a rounded
+rectangle 387 m round, 12 m wide, with kerbs down both sides and its corners on a 26 m
+radius, running clear of the jump course, the tower and the movement corner. It is the
+first map in this family built at a **car's** scale rather than a player's, and the first
+time anything here has put a vehicle through dot-timer.
+
+**A loop whose start and finish are the same place finishes on the tick it starts**, so
+the grid is at `s = 0` and the finish line is 12 m *behind* it. A car leaves the grid
+driving away from the line, goes all the way round, and crosses it on the way back to
+where it started. That is what a real circuit does by putting the timing loop somewhere
+other than the front row, and it is the only reason a lap here is a lap.
+
+Everything comes from one function. `PgLobby.circuit_point(s)` answers with a position
+and a direction of travel, and the road, the kerbs, the grid, the finish, the three
+splits and the spawn yaw are all derived from it — the same rule the two foot courses
+follow, for the same reason: a start line half a metre off the tarmac is a leaderboard
+nobody can compare, and on a track a car crosses at 25 m/s that half metre is two ticks.
+
+### Getting into a car used to cancel every run
+
+`Playground._on_seated` stopped the timer unconditionally, and that was right when every
+course was a foot course: a jump course driven round in a buggy is not a time anybody can
+compare with one that was jumped, and dot-timer has no idea a vehicle exists. It is
+exactly wrong on a circuit, and **a rule that cannot tell the two apart is why there was
+not one**.
+
+`PlaygroundMap.track_is_driven(track)` is the seam, defaulting to false — so every map
+that existed before there were cars behaves exactly as it did. The map answers because
+the map is the only thing that knows. The rule is symmetric and the second half matters
+as much: on a driven track, **getting out** ends the run, because the rest of the lap on
+foot is not the same lap.
+
+### What building it found
+
+- **`Basis.looking_at(dir)` aims -Z at `dir`, and a vehicle's forward IS -Z.** Negating
+  the argument — which is the natural thing to write when the vehicle notes say "a
+  positive `engine_force` drives +Z" — put the car on the grid facing backwards. It
+  reversed 12 m into the finish line and reported a lap of 0.36 seconds with no splits,
+  which is a perfectly plausible-looking pass if the only assertion is "it finished".
+- **A car parked on the road cannot be got out of.** `max_exit_speed` refuses an exit
+  above walking pace, correctly, and a test that coasts to a stop is not stopped. The
+  brake is `BUTTON_CROUCH`.
+- **`dedicated.tscn` had been carrying state between runs for weeks.**
+  `DotAchievementStoreFile` writes under `user://`, so each run added sixty prop spawns
+  to whatever the last one left; after about nine runs the "fifty unlocks the first tier
+  and not the second" check crossed 500 and began failing on a tree with no changes in
+  it. **A suite whose result depends on how many times it has been run is not a suite.**
+  It wipes the player's stored progress first now. This was not found by the circuit; it
+  was found by running the suite twice, which is what this family's own notes say to do
+  before blaming a change.
+
+And one that is a harness artefact rather than a bug, worth knowing before reading a
+failure here: **`headless_net`'s "it drives forwards" check is flaky.** Both games are
+plain nodes in one scene tree and therefore share one physics space, and the reading is
+whatever the two cars happened to be doing. It failed once at -0.16 m/s and passed twice
+straight after with nothing changed. Run it again before believing it.
+
 ## The tick rate comes from `server.cfg`, and every link in the chain is silent
 
 ```
@@ -783,7 +842,7 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
     godot --headless --path . --check-only --script "res://${f#./}"
 done
 godot --headless --path . --script tools/export_zones.gd
-godot --headless --path . res://examples/headless_playground.tscn   # 251 checks
+godot --headless --path . res://examples/headless_playground.tscn   # 275 checks
 godot --headless --path . res://examples/headless_net.tscn          # 109 checks
 godot --headless --path . res://examples/dedicated.tscn             # 126 checks
 ```

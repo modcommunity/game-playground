@@ -106,6 +106,13 @@ func _shots_for(id: String) -> Array[Dictionary]:
 		# is useless as evidence. From the side, the pad, the pillar and the first turn
 		# are all in one frame and a person can tell whether the first jump is a jump.
 		{"name": "pg_lobby_tower_eye", "from": Vector3(-72, 5.0, 48), "at": Vector3(-59, 6.0, 61)},
+
+		# Bonus 3, the circuit. Two angles, because the two things worth looking at are
+		# opposite: whether the lap reads as a closed loop round the whole plate (from
+		# high above the corner), and whether the road reads as a road at a driver's
+		# height (down the start/finish straight, from the grid).
+		{"name": "pg_lobby_circuit", "from": Vector3(-120, 105, 130), "at": Vector3(0, 0, 30)},
+		{"name": "pg_lobby_circuit_grid", "from": Vector3(-26, 3.0, 82), "at": Vector3(40, 2.0, 82)},
 	]
 
 

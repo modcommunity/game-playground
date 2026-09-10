@@ -662,10 +662,17 @@ func _on_seated(
 
 	player.set_riding(true)
 
-	# The run goes, and it is not optional: a timed course driven in a car is not a run
-	# anybody can compare with one that was walked, and dot-timer has no idea a vehicle
-	# exists. Stopping it is the same call a teleport makes, for the same reason.
-	if player.timer != null:
+	# The run goes on a track that is run, and it is not optional there: a timed course
+	# driven in a car is not a run anybody can compare with one that was walked, and
+	# dot-timer has no idea a vehicle exists. Stopping it is the same call a teleport
+	# makes, for the same reason.
+	#
+	# [b]On a track that is DRIVEN, getting in is the opposite of a reason to stop.[/b]
+	# `pg_lobby`'s bonus 3 is a circuit, where the car is the point; cancelling there
+	# would make a driving track impossible to build, and the rule that could not tell
+	# the two apart is why there was not one. The map answers, because the map is the
+	# only thing that knows which of its tracks is which.
+	if player.timer != null and not _track_is_driven(player.timer.track):
 		player.timer.stop(DotTimer.REASON_TELEPORT)
 
 	# A physics gun cannot hold a prop from inside a car. Not a rule about vehicles: the
@@ -693,6 +700,12 @@ func _on_unseated(
 		return
 
 	player.set_riding(false)
+
+	# And the mirror image on a driving track: the run ends when the driver leaves the
+	# car, because the rest of the lap on foot is not the same lap. On a foot track
+	# getting out changes nothing, which is what it has always done.
+	if player.timer != null and _track_is_driven(player.timer.track):
+		player.timer.stop(DotTimer.REASON_TELEPORT)
 
 	# Put down where the sweep said there was room, through the controller's own state
 	# rather than by moving the node: the movement reads position from the state and
@@ -1373,3 +1386,14 @@ func describe_lines() -> PackedStringArray:
 
 func _exit_tree() -> void:
 	DotRegistry.unregister_instance(DotRegistry.scoped_name(SERVICE, service_scope), self)
+
+
+## Whether the current map calls [param track] a driving track.
+##
+## Answered by the map, defaulting to false when there is no map loaded — the state a
+## dedicated server is in between `changelevel`s, where there is also nobody riding
+## anything, and where the safe answer is the one every map gave before there were cars.
+func _track_is_driven(track: int) -> bool:
+	var map := current_map_node()
+
+	return map != null and map.track_is_driven(track)

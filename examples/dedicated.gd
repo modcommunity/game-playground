@@ -844,6 +844,18 @@ func _test_progress() -> void:
 	var problems := progress.achievements.catalogue.validate()
 	_check(problems.ok, "the catalogue validates", str(problems.error))
 
+	# [b]Wipe this player's stored progress first.[/b] `DotAchievementStoreFile` writes to
+	# `user://`, so every run of this suite ADDED sixty spawns to whatever the last one
+	# left — and after about nine runs the "and not the second" check below crossed 500
+	# and started failing for ever, on a tree with no changes in it. A suite that carries
+	# state between runs is a suite whose result depends on how many times it has been
+	# run, which is the one thing a check must not depend on.
+	#
+	# Matched by substring rather than by a filename this test would have to know: the
+	# store's naming is the store's business, and a second copy of it here is the
+	# family's most repeated bug in miniature.
+	_forget_stored_progress(progress, "pg-test")
+
 	progress.begin("pg-test")
 
 	for _one in range(60):
@@ -1036,3 +1048,19 @@ func _test_module_unloads_cleanly() -> void:
 	_check(reloaded.ok, "and it can be loaded again")
 
 	await get_tree().process_frame
+
+
+## Deletes any file the achievement store has written for [param player].
+##
+## The store is a directory of files under `user://` and it is not part of what this
+## suite is testing; what matters is that a run starts from nothing. Failing to open the
+## directory is not an error — the first run on a machine has no directory yet.
+func _forget_stored_progress(progress: PlaygroundProgress, player: String) -> void:
+	var dir := DirAccess.open(progress.progress_dir)
+
+	if dir == null:
+		return
+
+	for file in dir.get_files():
+		if file.contains(player):
+			dir.remove(file)

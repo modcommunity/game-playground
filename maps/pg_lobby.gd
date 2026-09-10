@@ -139,6 +139,72 @@ const TOWER_PILLAR := 2.4
 ## inside the tower's footprint is a player who came off the spiral.
 const TOWER_FLOOR_Y := 1.2
 
+# --- The circuit -----------------------------------------------------------
+
+# Bonus 3, and the first thing in this family built at a CAR's scale rather than a
+# player's. Same rule as the two courses above: every number here is read by both
+# `_build_circuit` and `build_zones`, through one shared `circuit_point`, because a
+# start line half a metre off the tarmac it belongs to is a leaderboard nobody can
+# compare — and on a track a car crosses at 25 m/s that half metre is two ticks.
+
+## The centreline's half-extents, and the radius its corners are rounded on.
+##
+## [b]Sized against the vehicle, exactly as the jump course was sized against the
+## jump.[/b] `dot-vehicle`'s buggy tunables put it somewhere around 25 m/s flat out,
+## and a corner taken at speed needs a radius the steering can actually hold. At
+## r = 26 m a 25 m/s car needs 24 m/s² of lateral grip, which is more than it has — so
+## the corners here are ones a driver has to brake for, which is what makes a lap
+## something to get better at instead of a wall to hold the throttle against.
+##
+## The inner edge sits at 82 - 6 = 76 m from the middle of the plate. The jump course
+## (x 60), the tower (x -60, radius 6, so -66 at worst) and the movement corner all
+## live inside that, so the circuit runs round every one of them without touching any.
+const CIRCUIT_HALF := 82.0
+const CIRCUIT_CORNER := 26.0
+
+## The width of the road surface. Three buggies abreast, which is what makes a corner
+## a choice of line rather than a corridor.
+const CIRCUIT_WIDTH := 12.0
+
+## The road surface's thickness. It stands PROUD of the plate rather than being flush
+## with it.
+##
+## [b]Flush is not an option and the reason is not cosmetic.[/b] Two coplanar surfaces
+## at the same height z-fight, and the resulting shimmer is the single most obvious
+## "this is untextured dev geometry" tell there is. 10 cm of box with its centre on
+## y = 0 puts the tarmac 5 cm above the plate, which no wheel and no step height
+## notices, and which a screenshot reads as a road.
+const CIRCUIT_THICKNESS := 0.1
+
+## The kerbs down either side.
+##
+## Low enough to drive over, because a kerb a car cannot cross is a wall, and half the
+## point of a kerb is that a driver can put two wheels on it and regret it.
+const CIRCUIT_KERB_HEIGHT := 0.5
+const CIRCUIT_KERB_WIDTH := 1.5
+
+## How many boxes the lap is cut into.
+##
+## The corners are arcs and a box is straight, so this is the chord count: 64 segments
+## over a 387 m lap is a 6 m chord, and on a 26 m corner radius that leaves under 9 cm
+## of scallop between the chord and the true arc. Under a wheel radius, so a car does
+## not feel it.
+const CIRCUIT_SEGMENTS := 64
+
+## Where the timing line sits, measured backwards along the lap from the grid.
+##
+## [b]This is the whole trick that makes a LOOP timeable.[/b] A start and a finish in
+## the same place is a run that finishes on the tick it starts. So the grid is at
+## s = 0 and the finish line is 12 m before it: a car leaves the grid heading away
+## from the line, drives the entire lap, and crosses the line on the way back to the
+## grid it started on. It is the same thing a real circuit does by putting the timing
+## loop somewhere other than the front row, and it means a lap here is a lap rather
+## than a lap minus a few metres.
+const CIRCUIT_FINISH_BACK := 12.0
+
+## The track bonus 3 runs on.
+const CIRCUIT_TRACK := DotTimerTrack.BONUS_FIRST + 2
+
 
 func _build() -> void:
 	PlaygroundGeometry.sun(self)
@@ -170,6 +236,7 @@ func _build() -> void:
 	_build_movement_corner()
 	_build_course()
 	_build_tower()
+	_build_circuit()
 
 
 ## A staircase and two ramps, so the movement is visible without leaving the sandbox.
@@ -458,6 +525,7 @@ static func build_zones() -> DotTimerZoneSet:
 	zones.add(reset)
 
 	_add_tower_zones(zones)
+	_add_circuit_zones(zones)
 
 	return zones
 
@@ -572,3 +640,252 @@ static func _add_tower_zones(zones: DotTimerZoneSet) -> void:
 		)
 	)
 	zones.add(reset)
+
+
+# --- The circuit -----------------------------------------------------------
+
+
+## The length of one lap, in metres.
+##
+## A rounded rectangle: four straights of `2 * (HALF - CORNER)` between four quarter
+## turns that add up to one full circle.
+static func circuit_length() -> float:
+	return 8.0 * (CIRCUIT_HALF - CIRCUIT_CORNER) + TAU * CIRCUIT_CORNER
+
+
+## The point on the centreline [param s] metres along the lap, and the direction of
+## travel there.
+##
+## [b]One function, and both the road and the zones are drawn from it.[/b] That is the
+## same reason `platform_centre` is static: a second description of where the tarmac is
+## drifts from the first, and the drift is invisible until somebody's lap is invalidated
+## by a finish line sitting in the grass.
+##
+## Returns `[position, forward]`, both [Vector3]. The lap starts at the middle of the
+## +Z straight travelling toward +X and turns right, so a driver leaving the grid has
+## the plate on their left the whole way round.
+static func circuit_point(s: float) -> Array:
+	var straight_x := 2.0 * (CIRCUIT_HALF - CIRCUIT_CORNER)
+	var straight_z := straight_x
+	var arc := TAU * CIRCUIT_CORNER * 0.25
+	var inner := CIRCUIT_HALF - CIRCUIT_CORNER
+
+	var d := fposmod(s, circuit_length())
+
+	# Leg 1: the second half of the +Z straight, from the grid out to the first corner.
+	if d < straight_x * 0.5:
+		return [Vector3(d, 0.0, CIRCUIT_HALF), Vector3(1.0, 0.0, 0.0)]
+
+	d -= straight_x * 0.5
+
+	# Corner 1, into the +X straight.
+	if d < arc:
+		return _circuit_arc(Vector3(inner, 0.0, inner), PI * 0.5, -d / CIRCUIT_CORNER)
+
+	d -= arc
+
+	# Leg 2: the whole +X straight, travelling toward -Z.
+	if d < straight_z:
+		return [
+			Vector3(CIRCUIT_HALF, 0.0, inner - d), Vector3(0.0, 0.0, -1.0)
+		]
+
+	d -= straight_z
+
+	# Corner 2, into the -Z straight.
+	if d < arc:
+		return _circuit_arc(Vector3(inner, 0.0, -inner), 0.0, -d / CIRCUIT_CORNER)
+
+	d -= arc
+
+	# Leg 3: the whole -Z straight, travelling toward -X.
+	if d < straight_x:
+		return [
+			Vector3(inner - d, 0.0, -CIRCUIT_HALF), Vector3(-1.0, 0.0, 0.0)
+		]
+
+	d -= straight_x
+
+	# Corner 3, into the -X straight.
+	if d < arc:
+		return _circuit_arc(
+			Vector3(-inner, 0.0, -inner), -PI * 0.5, -d / CIRCUIT_CORNER
+		)
+
+	d -= arc
+
+	# Leg 4: the whole -X straight, travelling toward +Z.
+	if d < straight_z:
+		return [
+			Vector3(-CIRCUIT_HALF, 0.0, d - inner), Vector3(0.0, 0.0, 1.0)
+		]
+
+	d -= straight_z
+
+	# Corner 4, back onto the +Z straight.
+	if d < arc:
+		return _circuit_arc(Vector3(-inner, 0.0, inner), PI, -d / CIRCUIT_CORNER)
+
+	d -= arc
+
+	# Leg 5: the first half of the +Z straight, running back up to the grid. The lap
+	# is closed here rather than at the corner, which is what lets the finish line sit
+	# behind the grid on a straight the driver is already committed to.
+	return [Vector3(d - inner, 0.0, CIRCUIT_HALF), Vector3(1.0, 0.0, 0.0)]
+
+
+## A point on one of the four corner arcs.
+##
+## [param centre] is the centre of the quarter circle, [param from] the angle the arc
+## starts at, and [param turn] how far round it has gone, both in radians. The turn is
+## negative because the lap goes clockwise seen from above, and the tangent is the
+## radius rotated a quarter turn the same way.
+static func _circuit_arc(centre: Vector3, from: float, turn: float) -> Array:
+	var angle := from + turn
+	var out := Vector3(cos(angle), 0.0, sin(angle))
+
+	return [centre + out * CIRCUIT_CORNER, Vector3(out.z, 0.0, -out.x)]
+
+
+## Builds the road and its kerbs.
+##
+## Cut into [constant CIRCUIT_SEGMENTS] boxes rather than drawn as a curve, because
+## everything else in this project is a box with a [BoxShape3D] under it and a
+## [ConcavePolygonShape3D] here would be the one surface in the sandbox that behaves
+## differently under a wheel.
+func _build_circuit() -> void:
+	var length := circuit_length()
+	var step := length / float(CIRCUIT_SEGMENTS)
+	var half := CIRCUIT_WIDTH * 0.5
+
+	for i in range(CIRCUIT_SEGMENTS):
+		var here: Array = circuit_point(float(i) * step)
+		var next: Array = circuit_point(float(i + 1) * step)
+		var a: Vector3 = here[0]
+		var b: Vector3 = next[0]
+		var mid := (a + b) * 0.5
+		var forward: Vector3 = (b - a).normalized()
+
+		# A hair longer than the chord, so consecutive segments overlap rather than
+		# meeting exactly. Two boxes that share a face leave a seam a wheel can catch
+		# on at speed, and a car that loses its front axle once a lap on a corner
+		# nobody built is a bug that reads as bad handling.
+		var run := a.distance_to(b) + 0.2
+		var basis := Basis.looking_at(forward, Vector3.UP)
+
+		# The start/finish stretch is painted, so the line a lap is measured at is
+		# visible from a car rather than being a number in a JSON file.
+		var painted := i == 0 or float(i) * step > length - CIRCUIT_FINISH_BACK - step
+		var surface := PlaygroundGeometry.COLOUR_START if i == 0 else (
+			PlaygroundGeometry.COLOUR_END if painted
+			else PlaygroundGeometry.COLOUR_FLOOR
+		)
+
+		PlaygroundGeometry.box(
+			self,
+			mid,
+			Vector3(CIRCUIT_WIDTH, CIRCUIT_THICKNESS, run),
+			surface,
+			basis
+		)
+
+		# Kerbs, one either side, alternating colour so the road reads as a road from
+		# above instead of as a grey ribbon on a grey plate.
+		var side := basis.x * (half + CIRCUIT_KERB_WIDTH * 0.5)
+		var kerb := PlaygroundGeometry.COLOUR_PLATFORM if i % 2 == 0 \
+			else PlaygroundGeometry.COLOUR_RAMP
+
+		for direction in [1.0, -1.0]:
+			PlaygroundGeometry.box(
+				self,
+				mid + side * direction
+					+ Vector3(0.0, CIRCUIT_KERB_HEIGHT * 0.5, 0.0),
+				Vector3(CIRCUIT_KERB_WIDTH, CIRCUIT_KERB_HEIGHT, run),
+				kerb,
+				basis
+			)
+
+
+## A zone box spanning the road at [param s], [param depth] metres deep along the lap.
+##
+## Built from `circuit_point` like everything else, and deliberately axis-aligned:
+## [DotTimerZone] boxes are AABBs, so a zone across a corner would have to be a
+## rectangle big enough to contain the rotated one. Every zone this map places is on a
+## straight for exactly that reason.
+static func _circuit_zone(
+	kind: int, s: float, depth: float, height: float = 6.0
+) -> DotTimerZone:
+	var point: Array = circuit_point(s)
+	var at: Vector3 = point[0]
+	var forward: Vector3 = point[1]
+	var across := Vector3(forward.z, 0.0, -forward.x).abs() * CIRCUIT_WIDTH * 0.5
+	var along := forward.abs() * depth * 0.5
+	var extent := across + along + Vector3(0.6, 0.0, 0.6)
+
+	var zone := DotTimerZone.make(kind, CIRCUIT_TRACK)
+	zone.set_box(
+		Vector3(at.x - extent.x, -1.0, at.z - extent.z),
+		Vector3(at.x + extent.x, height, at.z + extent.z)
+	)
+
+	return zone
+
+
+static func _add_circuit_zones(zones: DotTimerZoneSet) -> void:
+	var length := circuit_length()
+	var grid: Array = circuit_point(0.0)
+	var at: Vector3 = grid[0]
+	var forward: Vector3 = grid[1]
+
+	var spawn := DotTimerZone.make(DotTimerZone.Kind.SPAWN, CIRCUIT_TRACK)
+
+	# On the grid, a whisker above the tarmac. Not the plate: a car spawned at plate
+	# height with a 5 cm road under it starts the lap with its wheels through the
+	# surface, and a raycast vehicle with no contact has no traction at all — which is
+	# the exact failure `[veh-2]` spent an hour on.
+	spawn.destination = at + Vector3(0.0, CIRCUIT_THICKNESS * 0.5 + 1.0, 0.0)
+
+	# Facing the way the lap goes, derived from the same tangent the road is. The two
+	# minus signs are `_add_tower_zones`' — `DotFpsMotor._view_basis` builds forward as
+	# `(-sin(yaw), 0, -cos(yaw))`, so the inverse carries both, and the obvious
+	# `atan2(dx, dz)` spawns a driver pointing at the finish line they have not reached.
+	spawn.destination_yaw = rad_to_deg(atan2(-forward.x, -forward.z))
+	zones.add(spawn)
+
+	# The grid box. Timing begins when the car LEAVES it, which is the moment it rolls
+	# off the line, rather than when it was placed there.
+	zones.add(_circuit_zone(DotTimerZone.Kind.START, 0.0, 10.0))
+
+	# The finish, `CIRCUIT_FINISH_BACK` metres before the grid, so the car meets it at
+	# the END of a full lap and never at the start of one. See the constant.
+	#
+	# Deep for `thin_zones`' reason and then some: at 128 Hz a car arriving at 25 m/s
+	# covers 20 cm in a tick, which is over twice what a sprinting player does, and a
+	# finish line thinner than that is one the fastest laps pass straight through.
+	zones.add(
+		_circuit_zone(
+			DotTimerZone.Kind.END, length - CIRCUIT_FINISH_BACK, 8.0
+		)
+	)
+
+	# Three splits, one at each of the far three straights, so a lap can be compared
+	# with itself corner by corner rather than only at the end.
+	for i in range(3):
+		var stage := _circuit_zone(
+			DotTimerZone.Kind.STAGE, length * float(i + 1) * 0.25, 3.0
+		)
+		stage.number = float(i + 1)
+		zones.add(stage)
+
+
+## Bonus 3 is driven, and nothing else here is.
+##
+## [b]This is the only place in the project that answers the question, and it is
+## answered by the MAP.[/b] `Playground._on_seated` used to cancel every run the
+## moment a player got into a car, which was right when every course was a foot
+## course: a jump course driven round in a buggy is not a time anybody can compare
+## with one that was jumped. It is exactly wrong on a circuit, where the car is the
+## point, and a rule that cannot tell those apart makes the second one impossible to
+## build.
+func track_is_driven(track: int) -> bool:
+	return track == CIRCUIT_TRACK

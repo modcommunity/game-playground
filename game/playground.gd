@@ -812,7 +812,17 @@ func _build_maps() -> void:
 
 
 ## The maps this build ships. A server with delivered maps loads a JSON catalogue.
+##
+## An instance method that forwards, so a caller with a [Playground] keeps working — and
+## [b]a static one beside it, because the server browser needs the list without a game.[/b]
+## A browser is a menu: there is no world, no server and no [Playground] to ask, and a
+## second copy of the list written into the menu is the thing this tree has now gone stale
+## four times over.
 func _map_catalogue() -> DotMapCatalogue:
+	return map_catalogue()
+
+
+static func map_catalogue() -> DotMapCatalogue:
 	var catalogue := DotMapCatalogue.new()
 
 	var table := [

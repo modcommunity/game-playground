@@ -32,6 +32,22 @@ var game: Playground = null
 var net: DotNetManager = null
 var bridge: PlaygroundNetBridge = null
 
+## Chat, moderation and voice. Built here rather than in the game, because they are about
+## the people connected rather than about the world.
+var services: PlaygroundServices = null
+
+## Health, weapons that hurt, and a round. Off unless an operator turns it on.
+var arena: PlaygroundArena = null
+
+## NPCs the server releases, paced by a director. Also off by default.
+var waves: PlaygroundWaves = null
+
+## Per-player statistics, and what they are worth.
+var progress: PlaygroundProgress = null
+
+## What plays next, decided by the players.
+var vote: PlaygroundVote = null
+
 ## Which userids have already been given a player, so a re-fired spawn does not add a
 ## second one.
 var _joined: Dictionary = {}
@@ -44,6 +60,9 @@ var _tick: int = 0
 ## — and the failure is a zone spanning the distance between them, saved, with
 ## nothing to say it was not meant.
 var _painters: Dictionary = {}
+
+## Who last said something. What `pg_status` reports, off the accepted line.
+var _last_spoke: String = ""
 
 
 func _module_name() -> String:
@@ -78,6 +97,11 @@ func _module_load() -> DotResult:
 
 	if not netted.ok:
 		return netted
+
+	var extras := _build_extras()
+
+	if not extras.ok:
+		return extras
 
 	# --- The timer ---------------------------------------------------------
 	add_command(
@@ -161,6 +185,38 @@ func _module_load() -> DotResult:
 
 	add_command("pg_status", _cmd_status, "What this server is doing", "")
 
+	# --- The addons an operator turns on -----------------------------------
+	add_command(
+		"pg_services", _cmd_services,
+		"Show chat, voice and moderation", DotAdminFlags.GENERIC
+	)
+	add_command(
+		"pg_arena", _cmd_arena,
+		"pg_arena [on|off] — health, weapons that hurt, and a round",
+		DotAdminFlags.CHANGEMAP
+	)
+	add_command(
+		"pg_waves", _cmd_waves,
+		"pg_waves [on|off|clear] — NPCs the server releases",
+		DotAdminFlags.CHANGEMAP
+	)
+	add_command(
+		"pg_vote", _cmd_vote,
+		"pg_vote [open|next|status] — what plays next", DotAdminFlags.CHANGEMAP
+	)
+	add_command(
+		"pg_achievements", _cmd_achievements,
+		"pg_achievements [player] — what somebody has earned", ""
+	)
+	# MUTE rather than BAN: quieting somebody and removing them are different powers, and
+	# dot-server's own flags are what distinguish them.
+	add_command(
+		"pg_gag", _cmd_gag, "pg_gag <who> <seconds> [reason]", DotAdminFlags.MUTE
+	)
+	add_command(
+		"pg_mute", _cmd_mute, "pg_mute <who> <seconds> [reason]", DotAdminFlags.MUTE
+	)
+
 	# The tick rate is dot-server's `sv_tickrate` and is deliberately not duplicated
 	# here. A second cvar for the same number is a second number that can disagree
 	# with the first, and the timer reads the engine — see
@@ -176,6 +232,18 @@ func _module_load() -> DotResult:
 	game.run_filed.connect(_on_run_filed)
 
 	hook_post("client_spawn", _on_client_spawn)
+
+	# [b]dot-server's own chat is cancelled here rather than listened to.[/b]
+	# [DotChatRouter] has the rules now, and the one thing that must not happen is both
+	# running: two sets of rules to keep in step, and the one that skipped the filter would
+	# be the one that leaked admin chat. A pre-hook is what can cancel;
+	# [method DotChatManager.handle_message] broadcasts the moment the event returns.
+	hook_pre("player_chat", _on_player_chat)
+
+	# dot-chat makes the join and leave notices now, so dot-server's would be a second one
+	# on a second path.
+	if server.chat != null:
+		server.chat.announce_joins = false
 
 	log_info("playground loaded", {
 		"map": String(game.maps.current.id) if game.maps.current != null else "-",
@@ -202,6 +270,303 @@ func _module_unload() -> void:
 			game.remove_player(id)
 
 	_painters.clear()
+
+
+## Everything that is not the netcode.
+##
+## [b]Built in this order because each one needs the last.[/b] The services register a mute
+## source the chat router warns about the absence of; the progress layer watches the prop
+## spawner and the timer; the arena and the waves both act on the world. None of it
+## suspends, because [method DotModuleHost.load_module] does not await `_module_load` and a
+## module whose load suspends returns null to it.
+func _build_extras() -> DotResult:
+	services = PlaygroundServices.new()
+	services.name = "Services"
+	services.bridge = bridge
+	services.game = game
+	services.server = server
+	add_child(services)
+
+	var serviced := services.setup()
+
+	if not serviced.ok:
+		return serviced.wrap("The services could not be set up")
+
+	bridge.say_requested.connect(_on_say_requested)
+	bridge.voice_requested.connect(_on_voice_requested)
+	bridge.vote_requested.connect(_on_vote_requested)
+	bridge.loadout_requested.connect(_on_loadout_requested)
+	services.command_entered.connect(_on_chat_command)
+	services.chat.message_accepted.connect(_on_chat_accepted)
+
+	arena = PlaygroundArena.new()
+	arena.name = "Arena"
+	add_child(arena)
+
+	var fought := arena.setup(game)
+
+	if not fought.ok:
+		return fought.wrap("The arena could not be set up")
+
+	arena.health_changed.connect(_on_health_changed)
+	arena.player_killed.connect(_on_player_killed)
+	arena.clock_changed.connect(bridge.broadcast_match)
+
+	waves = PlaygroundWaves.new()
+	waves.name = "Waves"
+	add_child(waves)
+
+	var waved := waves.setup(game)
+
+	if not waved.ok:
+		return waved.wrap("The waves could not be set up")
+
+	# The director paces against real health when the arena is on, and against proximity
+	# alone when it is not. One callable rather than two code paths.
+	waves.health_fn = func(id: StringName) -> float:
+		var health := arena.health_of(id)
+		return health.fraction() if health != null else 1.0
+
+	progress = PlaygroundProgress.new()
+	progress.name = "Progress"
+	progress.backbone = null
+	progress.key_for = _stats_key_for
+	add_child(progress)
+
+	var earned := progress.setup(game)
+
+	if not earned.ok:
+		return earned.wrap("Progress could not be set up")
+
+	progress.earned.connect(_on_earned)
+
+	vote = PlaygroundVote.new()
+	vote.name = "Vote"
+	vote.player_count_fn = func() -> int: return game.players.size()
+	vote.is_admin_fn = _voter_is_admin
+	add_child(vote)
+
+	var voted := vote.setup(game)
+
+	if not voted.ok:
+		return voted.wrap("The vote could not be set up")
+
+	vote.change_due.connect(_on_vote_change_due)
+	vote.announced.connect(_on_vote_announced)
+
+	# [b]The one signal that fires for every change however it happened.[/b] An operator
+	# typing `pg_map`, the time limit expiring and the vote applying all end at
+	# `DotMapSession.changed` — which is why the director does not announce its own change
+	# and why this is the only connection. Two of them is two entries in the play history
+	# for one play, and a "played in the last N" cooldown that is quietly half what it
+	# says: dot-vote's fifth bug, from the other side.
+	game.maps.changed.connect(func(map: DotMapDef, _world: Node) -> void:
+		vote.note_playing(map.id)
+	)
+
+	if game.maps.current != null:
+		vote.note_playing(game.maps.current.id)
+
+	return DotResult.success(null)
+
+
+# --- Chat, voice and votes -------------------------------------------------
+
+## Somebody said something through dot-server's own chat path.
+##
+## Taken and cancelled, not watched: this game's rules are [DotChatRouter]'s now, and
+## cancelling is what makes there be exactly one path.
+func _on_player_chat(event: DotEvent) -> void:
+	event.cancel("routed by the sandbox's chat", _module_name())
+
+	var session := event.get_session()
+
+	if session == null or services == null or services.chat == null:
+		return
+
+	_on_say_requested(
+		session.peer_id, PlaygroundServices.CHANNEL_ALL, event.get_string("text")
+	)
+
+
+func _on_say_requested(peer_id: int, channel_id: StringName, text: String) -> void:
+	var said := services.chat.submit(peer_id, channel_id, text)
+
+	if not said.ok and said.error != null:
+		# Back to the sender and nowhere else: dot-chat is deliberate that a rate-limited
+		# or gagged player must not be able to measure the difference from outside.
+		services.chat.notice(peer_id, said.error.message, channel_id)
+
+
+func _on_voice_requested(peer_id: int, payload: PackedByteArray) -> void:
+	services.voice.relay(peer_id, payload)
+
+
+func _on_chat_accepted(message: DotChatMessage, _to: PackedInt32Array) -> void:
+	if message.sender_peer > 0:
+		_last_spoke = message.sender_name
+
+
+## An unclaimed `!command` from chat, routed into dot-server's own console with the
+## player's permissions.
+##
+## [b]Not a second command table.[/b] dot-server already decides what a session may run,
+## logs it to the audit log and answers it — and this game's console surface is the largest
+## in the family, so a second table would be the larger half unaudited.
+func _on_chat_command(peer_id: int, command: String, args: PackedStringArray) -> void:
+	var session := server.session_of(peer_id)
+
+	if session == null:
+		return
+
+	if server.console.find_command(command) == null:
+		DotLog.debug(CHANNEL, "an unknown chat command was ignored", {
+			"peer": peer_id, "command": command,
+		})
+		return
+
+	var ctx := session.make_context(
+		command,
+		args,
+		DotCmdContext.Source.CHAT,
+		func(line: String) -> void:
+			services.chat.notice(peer_id, line, PlaygroundServices.CHANNEL_ALL)
+	)
+
+	var line := command
+
+	for arg in args:
+		line += " " + arg
+
+	server.console.execute(line, ctx)
+
+
+func _on_vote_requested(peer_id: int, token: String) -> void:
+	var session_id := bridge.player_for_peer(peer_id)
+
+	if session_id == 0:
+		return
+
+	var result := vote.submit(StringName("u%d" % session_id), token)
+
+	if not result.ok and services != null:
+		services.chat.notice(
+			peer_id, result.error.message, PlaygroundServices.CHANNEL_ALL
+		)
+
+
+func _voter_is_admin(voter: StringName) -> bool:
+	var text := String(voter)
+
+	if not text.begins_with("u"):
+		return false
+
+	var session := server.session_by_userid(text.substr(1).to_int())
+	return session != null and session.is_admin()
+
+
+func _on_vote_announced(line: String) -> void:
+	if services != null and services.chat != null:
+		services.chat.announce(line, PlaygroundServices.CHANNEL_ALL)
+
+
+## The vote picked a map. The game is what changes to it.
+func _on_vote_change_due(map_id: StringName) -> void:
+	game.change_map(map_id)
+
+
+# --- Loadouts, combat and progress ----------------------------------------
+
+func _on_loadout_requested(peer_id: int, pairs: Array) -> void:
+	var session_id := bridge.player_for_peer(peer_id)
+
+	if session_id == 0 or arena == null or arena.loadouts == null:
+		return
+
+	var loadout := DotLoadout.new()
+
+	for pair in pairs:
+		var row: Array = pair
+		loadout.set_item(StringName(str(row[0])), StringName(str(row[1])))
+
+	# [b]Validated on the way in, conformed on the way out.[/b] A client that can make the
+	# server repair its way to a legal loadout can put anything in any slot and have the
+	# server pick the nearest legal thing — so this direction refuses, and
+	# `conform_on_load` is on for the other one, where refusing would mean a player who
+	# has not played since a weapon changed cannot spawn.
+	# [b]Awaited, and this handler is therefore a coroutine.[/b] The store write is the
+	# suspension: a publish that reported success before the write returned would be a
+	# loadout a player believes they have and a server that has not kept it. Nothing after
+	# this line depends on anything else, so suspending here costs nothing — which is the
+	# only reason it is safe to do it inside a signal handler.
+	var published: DotResult = await arena.loadouts.publish(
+		"u%d" % session_id, loadout, 0
+	)
+
+	if not published.ok and services != null:
+		services.chat.notice(
+			peer_id, published.error.message, PlaygroundServices.CHANNEL_ALL
+		)
+
+
+func _on_health_changed(
+	player_id: StringName, health: float, armour: float, by: StringName
+) -> void:
+	bridge.broadcast_combat(
+		_session_of(player_id), int(health), int(armour), _session_of(by), false
+	)
+
+
+func _on_player_killed(victim: StringName, killer: StringName) -> void:
+	bridge.broadcast_combat(_session_of(victim), 0, 0, _session_of(killer), true)
+
+	if progress != null:
+		progress.note(victim, &"deaths", 1.0)
+
+		if killer != &"" and killer != victim:
+			progress.note(killer, &"kills", 1.0)
+
+
+func _on_earned(player_key: String, id: StringName, title: String, points: int) -> void:
+	# The session the key belongs to, so a client can colour the line. Linear over at most
+	# a few dozen players, a few times a session.
+	for userid in _joined.keys():
+		var session := server.session_by_userid(int(userid))
+
+		if session == null:
+			continue
+
+		if PlaygroundPlatform.key_for_session(server, session) != player_key:
+			continue
+
+		bridge.broadcast_progress(session.userid, id, title, points)
+		return
+
+
+## The key a statistic is filed under.
+##
+## [b]The scoped pseudonymous one when there is a dot-platform, and the session id when
+## there is not.[/b] dot-stats refuses an account id as a player key before it leaves the
+## server, and this is the one function that decides — a LAN sandbox files under something
+## that lasts as long as the session, which is honest.
+func _stats_key_for(player_id: StringName) -> String:
+	var text := String(player_id)
+
+	if not text.begins_with("u"):
+		return text
+
+	var session := server.session_by_userid(text.substr(1).to_int())
+
+	if session == null:
+		return text
+
+	return PlaygroundPlatform.key_for_session(server, session)
+
+
+## A world player id back to a dot-server session id, or zero.
+func _session_of(player_id: StringName) -> int:
+	var text := String(player_id)
+	return text.substr(1).to_int() if text.begins_with("u") else 0
 
 
 # --- The netcode -----------------------------------------------------------
@@ -256,6 +621,22 @@ func _physics_process(_delta: float) -> void:
 	_tick += 1
 	bridge.server_tick(_tick)
 
+	# [b]After the world has ticked, and that is the ordering that matters.[/b] dot-combat
+	# rewinds to resolve a shot and the waves read where everybody is, and both have to
+	# work on positions the movement has just produced — a list built before the tick is a
+	# list of where everybody WAS, which is the one-tick lag this family has documented
+	# three times now.
+	var step := 1.0 / float(maxi(game.tick_rate, 1))
+
+	if arena != null:
+		arena.tick(_tick, step)
+
+	if waves != null:
+		waves.tick(_tick, step)
+
+	if vote != null:
+		vote.advance(step)
+
 
 # --- Sessions --------------------------------------------------------------
 
@@ -294,7 +675,45 @@ func _on_client_spawn(event: DotEvent) -> void:
 
 	_joined[session.userid] = true
 
+	# Voice and chat learn about them before anything is sent, so a frame or a line that
+	# lands in the same flush as the admission has somewhere to go.
+	if services != null:
+		services.add_peer(session.peer_id)
+
+	if progress != null:
+		progress.begin(PlaygroundPlatform.key_for_session(server, session))
+
+	if arena != null and arena.enabled:
+		arena.admit(id, session.label())
+
+	_welcome(session)
+
 	log_info("player joined the game", {"player": String(id)})
+
+
+## What somebody is told once they are in: the backlog, and the clock.
+##
+## [b]After the admission, never before it.[/b] Nothing may be sent to a peer before it has
+## said it can receive — dot-server's signon finishes and *then* the client builds its
+## scene, and everything sent in between lands on a node that does not exist and is lost,
+## one "Node not found" per call.
+func _welcome(session: DotClientSession) -> void:
+	if bridge == null or not bridge.peer_is_ready(session.peer_id):
+		return
+
+	if services != null:
+		# The backlog: what was said before they walked in. dot-chat computes it per peer,
+		# because a channel with `backlog = 0` — the proximity one — must not replay a
+		# line somebody said quietly beside their build to a stranger who was not there.
+		for line in services.chat.backlog_for(session.peer_id):
+			bridge.send_chat(session.peer_id, line)
+
+		services.chat.join_notice(session.peer_id, PlaygroundServices.CHANNEL_ALL)
+
+	# The match clock, once, so a client that joined mid-round is not told `IDLE` until
+	# the next second ticks over.
+	if arena != null and arena.enabled:
+		arena._announce_clock()
 
 
 ## [b]`client_disconnected` emits TWO arguments — the session and a reason — and this
@@ -309,6 +728,26 @@ func _on_client_spawn(event: DotEvent) -> void:
 ## callable from anything that emits only the session.
 func _on_client_disconnected(session: DotClientSession, _reason: String = "") -> void:
 	var id := _player_id(session)
+
+	# [b]Off the broadcast set first.[/b] Everything below announces something about this
+	# person to everybody ELSE, and their socket has already gone.
+	if bridge != null:
+		bridge.mark_not_ready(session.peer_id)
+
+	if services != null:
+		services.chat.leave_notice(session.peer_id, PlaygroundServices.CHANNEL_ALL)
+		services.remove_peer(session.peer_id)
+
+	if vote != null and vote.director != null:
+		# The vote forgets them, or a rock-the-vote threshold counts a ballot from
+		# somebody who has left — which is how a server ends up unable to change at all.
+		vote.director.forget_voter(id)
+
+	if arena != null:
+		arena.release(id)
+
+	if progress != null:
+		progress.end(PlaygroundPlatform.key_for_session(server, session))
 
 	_painters.erase(id)
 	_joined.erase(session.userid)
@@ -911,6 +1350,166 @@ func _cmd_props_clear(ctx: DotCmdContext) -> void:
 
 func _cmd_status(ctx: DotCmdContext) -> void:
 	ctx.reply_lines(game.describe_lines())
+
+	if _last_spoke != "":
+		ctx.reply("last spoke   %s" % _last_spoke)
+
+	for layer in [arena, waves, vote]:
+		if layer != null:
+			ctx.reply_lines(layer.describe_lines())
+
+
+func _cmd_services(ctx: DotCmdContext) -> void:
+	ctx.reply_lines(services.describe_lines())
+
+
+func _cmd_arena(ctx: DotCmdContext) -> void:
+	match ctx.arg(0):
+		"on":
+			arena.set_enabled(true)
+
+			# Everybody already here joins the fight. A match that only admitted people
+			# who connected *after* it started would be a match the server's existing
+			# players are spectators in, with nothing saying so.
+			for id in game.players.keys():
+				arena.admit(id, String(id))
+
+			ctx.reply("The arena is on: %d fighting." % game.players.size())
+		"off":
+			arena.set_enabled(false)
+			ctx.reply("The arena is off. This is a sandbox again.")
+		_:
+			ctx.reply_lines(arena.describe_lines())
+
+
+func _cmd_waves(ctx: DotCmdContext) -> void:
+	match ctx.arg(0):
+		"on":
+			waves.set_enabled(true)
+			ctx.reply("Waves are on.")
+		"off":
+			waves.set_enabled(false)
+			ctx.reply("Waves are off, and the map is cleared of them.")
+		"clear":
+			var gone := waves.spawner.clear_all()
+			ctx.reply("Cleared %d." % gone)
+		_:
+			ctx.reply_lines(waves.describe_lines())
+
+
+func _cmd_vote(ctx: DotCmdContext) -> void:
+	match ctx.arg(0):
+		"open":
+			var opened := vote.director.open_vote()
+
+			if opened.ok:
+				ctx.reply("Vote opened.")
+			else:
+				ctx.reply_error(opened)
+		"next":
+			ctx.reply("Next in rotation: %s" % String(vote.next_in_rotation()))
+		_:
+			ctx.reply_lines(vote.describe_lines())
+
+
+func _cmd_achievements(ctx: DotCmdContext) -> void:
+	var session := ctx.session
+
+	if ctx.args.size() > 0:
+		var found := server.find_sessions(ctx.arg(0), ctx.session)
+		session = found[0] if not found.is_empty() else null
+
+	if session == null:
+		ctx.reply("Who?")
+		return
+
+	var key := PlaygroundPlatform.key_for_session(server, session)
+	var listing := progress.achievements.listing(key)
+
+	if listing.is_empty():
+		ctx.reply("%s has earned nothing yet." % session.display_name)
+		return
+
+	ctx.reply("%s — %d points" % [
+		session.display_name, progress.achievements.points_of(key)
+	])
+
+	for row in listing:
+		var entry: Dictionary = row
+
+		# A secret one that has not been earned is not listed at all. That is what
+		# `secret` means, and a listing that named it would be a listing that spoils it.
+		if bool(entry.get("secret", false)) and not bool(entry.get("unlocked", false)):
+			continue
+
+		ctx.reply("  %s %-24s %s" % [
+			"*" if bool(entry.get("unlocked", false)) else " ",
+			str(entry.get("name", "")),
+			str(entry.get("description", "")),
+		])
+
+
+func _cmd_gag(ctx: DotCmdContext) -> void:
+	await _punish(ctx, DotPunishment.Kind.GAG, "gagged")
+
+
+func _cmd_mute(ctx: DotCmdContext) -> void:
+	await _punish(ctx, DotPunishment.Kind.VOICE_MUTE, "muted")
+
+
+## The shared half of gag and mute.
+##
+## One function because the only difference is a kind: dot-moderation already models both
+## as one record with an expiry, a scope and a revocation, and writing them separately
+## would be two chances to forget the duration parsing or the immunity.
+func _punish(ctx: DotCmdContext, kind: DotPunishment.Kind, verb: String) -> void:
+	if ctx.args.size() < 2:
+		ctx.reply("Usage: %s <who> <seconds, 0 for permanent> [reason]" % ctx.command)
+		return
+
+	var targets := server.find_sessions(ctx.args[0], ctx.session)
+
+	if targets.is_empty():
+		ctx.reply("Nobody matches '%s'." % ctx.args[0])
+		return
+
+	if targets.size() > 1:
+		# Refused rather than applied to all of them: `@me` and a name prefix both match
+		# more than one person, and a mute applied to four people by accident is a thing
+		# an operator finds out about from the four people.
+		ctx.reply("'%s' matches %d people. Be more specific." % [
+			ctx.args[0], targets.size()
+		])
+		return
+
+	var session := targets[0]
+	var seconds := maxi(0, ctx.arg_int(1))
+	var reason := ctx.rest(2) if ctx.args.size() > 2 else "No reason given."
+
+	var issued: DotResult = await services.moderation.issue(
+		kind,
+		DotPunishmentSubject.for_uid(session.uid()),
+		reason,
+		ctx.caller_label(),
+		seconds,
+		ctx.immunity
+	)
+
+	if not issued.ok:
+		ctx.reply("Refused: %s" % issued.error.message)
+		return
+
+	ctx.reply("%s %s: %s" % [
+		session.display_name, verb, DotPunishment.format_duration(seconds)
+	])
+
+	# Told to the person it happened to, on the channel they are reading. A mute nobody is
+	# told about is a microphone that has stopped working, which is what they report.
+	services.chat.notice(
+		session.peer_id,
+		(issued.value as DotPunishment).player_message(),
+		PlaygroundServices.CHANNEL_ALL
+	)
 
 
 func _on_map_over(_map: DotMapDef, reason: StringName) -> void:

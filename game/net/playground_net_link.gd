@@ -28,6 +28,15 @@ const NODE_NAME := &"Playground"
 ## of snapshots delay a chat line, and vice versa.
 const CHANNEL_STATE := 1
 
+## Voice, and only voice.
+##
+## [constant DotTransport.Channel.EVENT] is what dot-server reserves for chat and events,
+## and this game's chat has moved onto [DotChatRouter] and rides `event` on the state
+## channel with everything else — so this one is free. Voice gets it to itself for the
+## reason the state channel exists at all: a hundred and twenty-eight snapshots a second
+## must not sit behind a talk spurt, and a talk spurt must not sit behind a snapshot.
+const CHANNEL_VOICE := 2
+
 ## The bridge these calls are delivered to. Set by whoever creates this node.
 var bridge: PlaygroundNetBridge = null
 
@@ -56,6 +65,8 @@ var inputs_sent: int = 0
 var inputs_received: int = 0
 var requests_sent: int = 0
 var requests_received: int = 0
+var voice_sent: int = 0
+var voice_received: int = 0
 
 
 static func attached_to(
@@ -121,6 +132,31 @@ func send_input(payload: PackedByteArray) -> void:
 		_net_client_input.rpc_id(1, payload)
 
 
+## One encoded [DotVoicePacket], in whichever direction this end is.
+##
+## [b]One call for both transports.[/b] On ENet `unreliable` is a UDP datagram that is
+## never retransmitted, which is what voice wants — a frame that arrives late is one the
+## jitter buffer has already concealed. On a WebSocket every transfer mode is TCP
+## underneath and it is delivered reliably whether or not that was asked for. That is a
+## property of the transport rather than a gap here.
+##
+## [param peer_id] is the recipient on a server and is ignored on a client. **Zero is not
+## "everybody"** — the router names its listeners one at a time.
+func send_voice(peer_id: int, payload: PackedByteArray) -> void:
+	if not _live():
+		return
+
+	voice_sent += 1
+
+	if loopback.is_valid():
+		loopback.call(&"voice", peer_id if is_server else 1, payload)
+	elif is_server:
+		if peer_id > 0:
+			_net_voice.rpc_id(peer_id, payload)
+	else:
+		_net_voice.rpc_id(1, payload)
+
+
 func send_request(payload: PackedByteArray) -> void:
 	if not _live():
 		return
@@ -181,6 +217,19 @@ func _net_request(payload: PackedByteArray) -> void:
 ## What the other end's [member loopback] calls. It goes through the same counters and
 ## the same bridge entry points the RPCs do, so a test exercises the real path minus the
 ## socket.
+## A voice frame, either way.
+##
+## `any_peer`, so on the server the sender is a claim until the transport is asked.
+## [method DotVoiceRouter.relay] stamps it over whatever the packet's own speaker field
+## said — without that any client can put words in any other player's mouth.
+@rpc("any_peer", "unreliable", "call_remote", CHANNEL_VOICE)
+func _net_voice(payload: PackedByteArray) -> void:
+	voice_received += 1
+
+	if bridge != null:
+		bridge.receive_voice(multiplayer.get_remote_sender_id(), payload)
+
+
 func deliver(method: StringName, from_peer_id: int, payload: PackedByteArray) -> void:
 	if bridge == null:
 		return
@@ -195,6 +244,9 @@ func deliver(method: StringName, from_peer_id: int, payload: PackedByteArray) ->
 		&"input":
 			inputs_received += 1
 			bridge.receive_input(from_peer_id, payload)
+		&"voice":
+			voice_received += 1
+			bridge.receive_voice(from_peer_id, payload)
 		&"request":
 			requests_received += 1
 			bridge.receive_request(from_peer_id, payload)
@@ -207,4 +259,5 @@ func describe() -> Dictionary:
 		"events": [events_sent, events_received],
 		"inputs": [inputs_sent, inputs_received],
 		"requests": [requests_sent, requests_received],
+		"voice": [voice_sent, voice_received],
 	}

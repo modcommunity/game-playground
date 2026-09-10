@@ -537,6 +537,169 @@ test, with the server configured for 100 precisely because the project's own def
 `sv_tickrate` goes in **`server.cfg`, not `autoexec.cfg`** — it is startup-only, and
 dot-server execs the first before the listener and the second after.
 
+## Chat is dot-chat's, and there is still exactly one path
+
+`DotChatRouter` has the rules: four channels, one of them a **radius**, a backlog for
+whoever just joined, a `/me`, and a gag that survives a reconnect. `PlaygroundModule` hooks
+`player_chat` with `hook_pre` and **cancels** it, so dot-server's own broadcast never
+happens, and its join and leave announcements are turned off in the same place.
+
+Two paths would be two sets of rules to keep in step, and the one that skipped the filter
+would be the one that leaked admin chat. `dedicated` asserts the cancel.
+
+**An unclaimed `!command` goes into dot-server's own console with the player's
+permissions.** Not a second command table — this game's console surface is the largest in
+the family and a second table would be the larger half unaudited.
+
+**The chat key is the session id, not the account uid.** dot-chat's `key_fn` and
+dot-moderation's `key_for_peer` are separate seams because they answer different questions:
+a punishment is against a person who will come back; a chat line is attributed to somebody
+standing here now. Two guests behind one device id share a uid, which game-simple-lobby
+found by running two clients in one process — with every count matching throughout.
+
+## Voice is the whole server, and the near channel is text's
+
+Three games, three answers, and each is right for what it is. A lobby is a room you can see
+all of, so its voice is the room. An arena is bigger than a screen, so game-hungario's is
+proximity. **A sandbox is both at once** — people build together in one corner and run the
+course in another — so text has a near channel and voice does not, which is what every
+sandbox server has ever shipped with: a builder shouting for a hand should be heard, and
+somebody in the corner reading should be able to stop reading the shouting.
+
+The rest is the lobby's reasoning: one `unreliable` RPC on its own channel serves a UDP
+desktop client and a TCP browser one; push-to-talk closes when a screen takes the keyboard;
+and playback goes into a **buffer** when there is no audio device, which is what makes the
+receiving half checkable at all.
+
+## The arena: dot-combat, dot-match and dot-loadout, off by default
+
+**A sandbox is not a deathmatch.** `pg_arena 1` is the switch, and everything behind it is
+inert until then — for the same reason `pg_waves` is: a server where somebody can shoot you
+while you are building is a *different server*, and turning one into the other silently
+because an addon was installed is exactly what a cvar exists to prevent.
+
+- **dot-combat** is health, damage types, hitboxes and the resolution — and the part that
+  matters is not the arithmetic. Friendly fire, self damage, falloff, hit groups and
+  clamping are **policy** on a resource rather than `if`s in a file, so an operator can
+  change any of them.
+- **dot-match** is warmup, countdown, rounds, scoring, respawning. Counted in ticks and
+  driven by one call, so it runs at whatever `sv_tickrate` says.
+- **dot-loadout** is what you spawn with, as a document of **ids** validated against a
+  schema and an entitlement set without loading any content.
+
+**The loadout catalogue is built FROM `PlaygroundWeapons`**, not beside it. The arsenal is
+already declared once — an id, a name, a script path — and what a `DotItem` adds is the two
+things a weapon definition has no business knowing: what it costs and what unlocks it. A
+second list is the bug this tree has now shipped four times.
+
+**The required slot has a default, and dot-loadout refuses a schema without one.** That
+refusal is right: a loadout missing a required slot cannot be *repaired*, so it can only be
+refused — and a player who has never chosen could then never spawn. The default is derived
+from the catalogue rather than written in.
+
+### The bug the arena found on its first run
+
+**A `DotDamage` with no `tick` is refused by spawn protection for ever.** `DotHealth.apply`
+refuses anything whose `tick` is at or before `invulnerable_until_tick`, and a `DotDamage`
+starts at tick 0 — so an event that was never stamped is refused on every player, with
+`refused` set, and nothing erroring anywhere. Every shot on the server does nothing and the
+only symptom is that combat does not work. One line; found by the suite's very first hit.
+
+## Waves: a second population, with a different owner
+
+`dot-npc-ai-director` releases NPCs the **server** owns, and they are deliberately *not*
+prop entities.
+
+This project's own rule — an entity is a `DotPropInstance` first, because *an NPC you
+cannot pick up is the first thing a sandbox player will try* — is about NPCs a **player**
+put there. A wave is not one: nobody spawned it, nobody owns it, and it is reclaimed when
+the players walk away from it, none of which a prop budget can express. So there are two
+populations with two owners and two reasons, and `pg_waves 1` is the only thing that makes
+the second exist.
+
+**Line of sight is ON here and off in the other two games**, which is the point of the
+flag: a sandbox has walls, pillars and whatever somebody built, and an NPC that saw through
+all of it would make cover meaningless. The other two are open arenas with nothing to be
+occluded by.
+
+**Spawn points come from the map's own `DotSpawnPoint`s.** A director inventing its own
+would be a director putting a brute in a wall; a ring around the origin is the fallback, and
+it says so in the log.
+
+## `npc_hunter` is `npc_chaser` with a decision, and both are in the catalogue
+
+The cheap one is for filling a room with and the expensive one is for the arena, and
+**keeping both is the only honest way to say what dot-npc-ai actually bought**:
+
+- a **reaction time**, so an NPC cannot commit on the tick it first perceives you — which
+  is the difference between a bot and a target;
+- a **character per NPC**, seeded from the instance id, so twenty of them do not react at
+  the same moment (which reads as a firing squad);
+- **separation**, so a pack converging on one player comes apart rather than climbing
+  itself into a tower that chases perfectly at a dead stop;
+- a **machine**, because there are four states and the transitions between them are the
+  whole design — a tree here would be four leaves under a selector pretending to be a
+  hierarchy. `wave_brain.gd` is a tree, for the opposite reason, and the two files together
+  are what dot-npc-ai's "which is which" note looks like in practice.
+
+### The bug it found in dot-npc-ai
+
+**`has_reacted()` was false for ever.** It measured from `DotNpcInstance.engaged_at`, which
+dot-npc refreshes on **every pass in which the target is perceived** — that is what the
+field is for, because it is what a reclaim asks about. So the gate every "act on what you
+see" branch belongs behind never opened, on any NPC that could currently see somebody,
+which is every NPC that would ever act on one.
+
+Nothing errored. **A bot that never acts on what it sees looks like a bot that is bad
+rather than like one that is broken**, which is why it survived a suite that tests
+`DotNpcAiCharacter.has_reacted` directly and correctly — the arithmetic was right the whole
+time and the field being handed to it was the wrong one. `DotNpcInstance.target_since` was
+added to dot-npc for it. This file had the same line and the same bug, which is the
+confirmation that the fix belonged in the addon.
+
+## Statistics, achievements and the vote
+
+**dot-stats and dot-achievements sit under the boards this game already had.** The boards
+held three orderings and there was nothing to put on them but times; what was missing was
+the *counts*. Every stat is recorded from a signal the game already fires — a second count
+of anything is a second number that can disagree with the first — and
+`DotAchievementStatsLink` is a signal connection over that rather than twenty call sites.
+
+`dedicated` checks that **every stat an achievement watches is one the game declares**. An
+achievement watching a stat nothing reports never unlocks, nothing errors, and the only
+symptom is a player who did the thing and was not told.
+
+**dot-vote replaced half a rock-the-vote.** `DotMapTimeLimit` counts a fraction of the
+players and fires, which is real and is half of one: it cannot offer a ballot, take
+nominations, break a tie, respect a cooldown or offer an extend. The time limit is now the
+clock *under* dot-vote rather than the vote itself, and the source is
+`DotVoteMapSource` over the `DotMapSession` this game already drives — one engine, two
+sources, and game-hungario's votes over *games* without either file naming the other.
+
+Three of dot-vote's own five bugs are settings set **explicitly** here rather than left:
+`extend_needs_majority` (two documented policies, one behaviour), `nomination_seconding`
+(without it every nomination count is exactly 1 and `MOST_NOMINATED` can never do
+anything), and `begin_on_apply` (both the director and the host announcing one play halves
+every cooldown — the host's `DotMapSession.changed` is the one signal that fires for every
+change however it happened, so it is the only connection).
+
+## Identity, and why a sandbox needs it at all
+
+`PlaygroundPlatform` builds dot-user, dot-user-avatar and `DotPlatformHub`, and
+`examples/dedicated.tscn` loads `DotPlatformModule` beside `PlaygroundModule`. It is
+optional: a LAN sandbox has no accounts and that is the most common deployment there is, so
+the module duck-types against it rather than naming it.
+
+**The reason it is here is dot-stats.** A statistic has to be filed under a key, and
+dot-stats refuses an account id as one before it leaves the server — so the scoped
+pseudonymous id dot-user derives is what a board and an achievement are keyed by.
+`PlaygroundPlatform.key_for_session` is the one function that decides, and without an
+identity stack it files under something that lasts exactly as long as the session, which is
+honest.
+
+**Name changes are off here and on in the lobby.** A sandbox has a leaderboard on it: a
+name that can change is a record whose owner cannot be recognised.
+
 ## The server module
 
 `game/playground_module.gd` is the only file here that names dot-server, which is where
@@ -551,6 +714,11 @@ becomes administrable:
 | `pg_map` `pg_nextmap` `pg_rtv` `pg_extend` | maps |
 | `pg_prop` `pg_undo` `pg_props_clear` | props |
 | `pg_status` | everything at once |
+| `pg_services` `pg_gag` `pg_mute` | chat, voice and moderation |
+| `pg_arena` | the fight, off by default |
+| `pg_waves` | the director's NPCs, off by default |
+| `pg_vote` | what plays next |
+| `pg_achievements` | what somebody has earned |
 
 **The zone commands are `CHANGEMAP`, not `GENERIC`.** Drawing a start line is editing
 the map's rules, and somebody who can do it can invalidate every record on it.
@@ -615,9 +783,9 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
     godot --headless --path . --check-only --script "res://${f#./}"
 done
 godot --headless --path . --script tools/export_zones.gd
-godot --headless --path . res://examples/headless_playground.tscn   # 208 checks
-godot --headless --path . res://examples/headless_net.tscn          # 73 checks
-godot --headless --path . res://examples/dedicated.tscn             # 59 checks
+godot --headless --path . res://examples/headless_playground.tscn   # 251 checks
+godot --headless --path . res://examples/headless_net.tscn          # 109 checks
+godot --headless --path . res://examples/dedicated.tscn             # 126 checks
 ```
 
 **Run the check-only pass first.** A script that fails to parse makes the scene fail
@@ -730,14 +898,20 @@ verb, the two want swapping together.
   not reproducible across machines, so the bridge replicates transforms rather than
   replaying inputs. The sandbox half is already shaped for that: the spawn menu emits
   rather than spawning, and the tools send intent.
-- **A scoreboard and a vote UI.** dot-ui has the screen stack and the spawn menu is
-  built on it; a scoreboard and a vote panel are the same shape and are not written.
+- **A scoreboard and a vote UI.** dot-ui has the screen stack; the spawn menu and the
+  server browser are built on it, and a scoreboard and a vote panel are the same shape and
+  are not written. The data behind both exists — `DotScoreboard` and
+  `DotVoteDirector.build_options` — which is what makes this an omission rather than a gap.
+- **A wardrobe screen.** The avatar schema, the entitlement check and the storage are all
+  here and a player cannot yet *choose*: `DotAvatarSchema.choices_for` is the call.
 - **Art.** `DotPropDef.icon_path` is read and nothing here sets it: the icons are drawn
   from the definition, which is honest for a project with no models. A server with
   content sets the field and gets its own thumbnails with no code change.
-- **NPCs that fight.** They walk, chase and shove. Health and damage are dot-combat's
-  and this project does not depend on it; a half-built damage model that disagreed with
-  the addon's would be worse than none.
+- **NPCs that fight.** They walk, chase, shove and are chased; dot-combat is installed and
+  the arena gives *players* health, and giving it to an NPC as well is a `DotHealth` on a
+  `DotNpcInstance` and a decision about what a wave is worth. Deliberate, because "the
+  hunters can hurt you" is a different game from "the hunters are in the way", and this
+  server has a cvar for turning the first one on and nothing yet for the second.
 - **Welding, ropes, thrusters, duplicators.** dot-props says why: constraints are a much
   larger surface than spawning, they interact with each other, and a half-built
   constraint system is worse than none. `DotPropTool` is the hook.

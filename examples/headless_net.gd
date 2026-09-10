@@ -170,10 +170,135 @@ func _test_event_wire() -> void:
 	)
 	_check(str(notice["text"]) == "Budget reached.", "notice: the text")
 
+	# --- chat, and the one meta field this wire carries ---
+	#
+	# [b]Every encoder against its decoder, which is what this section is for.[/b] The two
+	# have to be exact inverses and nothing can check that for you: dot-moderation shipped
+	# a store whose writer and reader never met, and every voice mute loaded back as a
+	# warning — which enforces nothing.
+	var line := DotChatMessage.make(
+		DotChatMessage.Kind.SAY, PlaygroundServices.CHANNEL_NEAR, "7", "Ada", "over here"
+	)
+	line.seq = 5
+	line.sent_at = 1700000000
+
+	var wire := line.to_dictionary()
+	wire["x"] = {"p": 7}
+
+	var chat := PlaygroundEvents.read_chat(
+		DotNetReader.new(PlaygroundEvents.write_chat(wire))
+	)
+	_check(bool(chat["ok"]), "chat: the reader was not exhausted")
+	_check(String(chat["m"]) == "over here", "chat: the text")
+	_check(
+		String(chat["c"]) == String(PlaygroundServices.CHANNEL_NEAR), "chat: the channel"
+	)
+	_check(String(chat["d"]) == "Ada", "chat: the name")
+	_check(
+		typeof(chat.get("x")) == TYPE_DICTIONARY
+			and int((chat["x"] as Dictionary).get("p", 0)) == 7,
+		"chat: who said it, which is the one meta field this wire carries"
+	)
+
+	# Every value of the enum, because dot-moderation's bug was exactly one value with no
+	# case in the parser.
+	var kinds_ok := true
+
+	for kind in DotChatMessage.Kind.values():
+		var one := DotChatMessage.make(
+			kind as DotChatMessage.Kind, PlaygroundServices.CHANNEL_ALL, "1", "A", "x"
+		)
+		var back := PlaygroundEvents.read_chat(
+			DotNetReader.new(PlaygroundEvents.write_chat(one.to_dictionary()))
+		)
+
+		if String(back["k"]) != one.kind_name():
+			kinds_ok = false
+
+	_check(kinds_ok, "chat: every kind survives, not just the common one")
+
+	var said := PlaygroundEvents.read_say(
+		DotNetReader.new(
+			PlaygroundEvents.write_say(PlaygroundServices.CHANNEL_NEAR, "anybody?")
+		)
+	)
+	_check(
+		bool(said["ok"]) and String(said["text"]) == "anybody?"
+			and String(said["channel"]) == String(PlaygroundServices.CHANNEL_NEAR),
+		"say: a client's own line, with the channel it chose"
+	)
+
+	# --- combat, the match clock and progress ---
+	var hit := PlaygroundEvents.read_combat(
+		DotNetReader.new(PlaygroundEvents.write_combat(9, 63, 25, 12, false))
+	)
+	_check(
+		bool(hit["ok"]) and int(hit["health"]) == 63 and int(hit["armour"]) == 25
+			and int(hit["attacker_id"]) == 12 and not bool(hit["died"]),
+		"combat: health, armour, who did it and whether it was fatal"
+	)
+
+	var clock := PlaygroundEvents.read_match(
+		DotNetReader.new(PlaygroundEvents.write_match(2, 96.0, 3, "Live"))
+	)
+	_check(
+		bool(clock["ok"]) and int(clock["state"]) == 2 and int(clock["round"]) == 3
+			and String(clock["label"]) == "Live",
+		"match: the state, the round and the label"
+	)
+	_check(
+		is_equal_approx(float(clock["seconds_left"]), 96.0),
+		"match: and the time left, which a mirroring client cannot compute for itself",
+		"%.1f" % float(clock["seconds_left"])
+	)
+
+	var earned := PlaygroundEvents.read_progress(
+		DotNetReader.new(PlaygroundEvents.write_progress(9, &"build_50", "Getting started", 10))
+	)
+	_check(
+		bool(earned["ok"]) and String(earned["id"]) == "build_50"
+			and int(earned["value"]) == 10,
+		"progress: an achievement round-trips"
+	)
+
+	# --- votes and loadouts ---
+	_check(
+		PlaygroundEvents.read_vote(
+			DotNetReader.new(PlaygroundEvents.write_vote("nominate pg_lobby"))
+		) == "nominate pg_lobby",
+		"vote: a token, which is a token because what an id MEANS is a source's business"
+	)
+
+	var loadout := PlaygroundEvents.read_loadout(
+		DotNetReader.new(
+			PlaygroundEvents.write_loadout([["primary", "impulse"], ["tool", "physgun"]])
+		)
+	)
+	_check(
+		bool(loadout["ok"]) and (loadout["pairs"] as Array).size() == 2,
+		"loadout: slot and item pairs round-trip (%d)"
+			% (loadout["pairs"] as Array).size()
+	)
+	_check(
+		bool(loadout["ok"]) and str(((loadout["pairs"] as Array)[0] as Array)[1]) == "impulse",
+		"loadout: and the ids are ids, which is all a server needs to validate one"
+	)
+
 	# A truncated packet must NOT decode as a valid message about nothing.
 	var truncated := PlaygroundEvents.write_join(9, 31, "Ada", 2)
 	var short := PlaygroundEvents.read_join(DotNetReader.new(truncated.slice(0, 2)))
 	_check(not bool(short["ok"]), "a truncated join is reported as exhausted, not as zeros")
+
+	# And a truncated chat line. [b]dot-timer found the general shape[/b]: a
+	# `StreamPeerBuffer` reads past its end by returning zeros rather than failing, so a
+	# replay truncated inside its header parsed as a valid replay of nothing.
+	var short_chat := PlaygroundEvents.read_chat(
+		DotNetReader.new(PlaygroundEvents.write_chat(wire).slice(0, 3))
+	)
+	_check(
+		not bool(short_chat["ok"]),
+		"and a truncated chat line is reported as exhausted rather than as an empty one"
+	)
 
 
 # --- Bringing both halves up -----------------------------------------------

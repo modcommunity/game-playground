@@ -77,10 +77,30 @@ var net: DotNetManager = null
 var bridge: PlaygroundNetBridge = null
 var player: PlaygroundPlayer = null
 var hud: PlaygroundHud = null
+
+## The client half of chat: the channels, the history, the unread counts and the gap
+## detection. It decides nothing — every rule is the server's.
+var chat: DotChatClient = null
+
+## The client half of voice. Every call on it is guarded, because "there is no microphone"
+## is a legitimate machine rather than an error.
+var voice: PlaygroundVoice = null
+
+## What this client is on: health, armour, and the match clock. Drawn, never decided.
+var health: int = 100
+var armour: int = 0
+var match_label: String = ""
+var match_seconds: float = 0.0
 var camera: Camera3D = null
 
 var screens: DotScreenStack = null
 var menu: PlaygroundSpawnMenu = null
+
+## The server list, on the same stack as the spawn menu.
+var browser: PlaygroundBrowser = null
+
+## Somebody picked a server in the browser. What a launcher connects to.
+signal server_chosen(address: String)
 
 ## Which prop the spawn key places. Armed by the menu.
 var selected_prop: StringName = &"crate"
@@ -219,6 +239,7 @@ func _ready() -> void:
 
 	# After the HUD, because for a CanvasItem tree order is draw order and a menu
 	# that renders under the speedometer is one whose bottom row cannot be clicked.
+	_build_client_services()
 	_build_screens()
 
 	set_process(true)
@@ -264,6 +285,14 @@ func _build_netcode() -> DotResult:
 
 	bridge.hello_received.connect(_on_hello)
 	bridge.roster_changed.connect(_on_roster_changed)
+	# [b]dot-server's own `chat_received` is deliberately NOT connected.[/b] The server
+	# cancels that path and routes every line through [DotChatRouter] onto this game's own
+	# wire instead; connecting both would draw a line twice on a server running the old
+	# path and once on one running the new.
+	bridge.chat_received.connect(_on_chat_wire)
+	bridge.combat_received.connect(_on_combat)
+	bridge.match_received.connect(_on_match)
+	bridge.progress_received.connect(_on_progress)
 	bridge.notice_received.connect(func(_pid: int, text: String) -> void:
 		if hud != null:
 			hud.notice(text)
@@ -377,6 +406,115 @@ func _build_view() -> void:
 	player.view = view
 
 
+## Chat and voice, once the bridge exists.
+func _build_client_services() -> void:
+	chat = DotChatClient.new()
+	chat.name = "Chat"
+	# The same channel definitions the server routes with — shared rather than sent, for
+	# the reason every constant in this family is shared: a client holding a different set
+	# would show a line on a channel it has no colour or prefix for.
+	chat.channels = PlaygroundServices.chat_channels()
+	chat.rules = PlaygroundServices.chat_rules()
+	chat.history_limit = 400
+	# Two clients in one process would otherwise collide on the registry name and one of
+	# them would be invisible to whatever asked.
+	chat.register_as = &""
+	add_child(chat)
+	chat.start()
+	chat.message_received.connect(_on_chat_message)
+
+	if bridge == null:
+		return
+
+	voice = PlaygroundVoice.new()
+	voice.name = "Voice"
+	voice.send_fn = func(bytes: PackedByteArray) -> void:
+		if bridge != null and bridge.link != null:
+			# Passed as 1 rather than 0: the peer is ignored on a client, and in this
+			# family zero has meant "everybody" often enough to be worth never writing by
+			# accident.
+			bridge.link.send_voice(1, bytes)
+	add_child(voice)
+
+	voice.setup(not DotPlatform.is_headless())
+	bridge.voice_arrived.connect(voice.receive)
+
+
+## A routed line off this game's own wire, filed by [DotChatClient] — which drops a
+## duplicate and reports a gap.
+func _on_chat_wire(wire: Dictionary) -> void:
+	if chat != null:
+		chat.receive(wire)
+
+
+## A line [DotChatClient] accepted: in sequence, not a duplicate, on a known channel.
+##
+## [b]The channel decides how it is drawn, and the channel is a document.[/b] Its prefix
+## and colour come off the [DotChatChannel] both ends share, so adding a channel is adding
+## a definition rather than a branch somebody has to remember to extend.
+func _on_chat_message(message: DotChatMessage, channel_id: StringName) -> void:
+	if hud == null:
+		return
+
+	var chan := chat.channel(channel_id)
+	var prefix := "%s " % chan.prefix if chan != null and chan.prefix != "" else ""
+
+	if message.is_from_server() or message.sender_name == "":
+		hud.notice("%s%s" % [prefix, message.text])
+		return
+
+	hud.notice("%s%s: %s" % [prefix, message.sender_name, message.text])
+
+
+## Somebody's health changed, or they died. Drawn, never decided.
+func _on_combat(state: Dictionary) -> void:
+	if int(state["player_id"]) != bridge.local_player_id:
+		return
+
+	health = int(state["health"])
+	armour = int(state["armour"])
+
+	if bool(state["died"]) and hud != null:
+		hud.notice("You were killed.")
+
+
+## The match clock.
+##
+## [b]Taken from the wire rather than from a local [DotMatch].[/b] Nothing ticks a
+## mirroring client's, so `seconds_remaining()` is derived from a tick that is still zero —
+## not a stale value, a value nothing had ever written. game-arena shipped a client that
+## showed `IDLE` for ever while the server was playing a round.
+func _on_match(state: Dictionary) -> void:
+	match_label = str(state["label"])
+	match_seconds = float(state["seconds_left"])
+
+
+## Somebody picked a server in the browser.
+##
+## [b]Connecting is the host application's, not this scene's.[/b] A client scene that
+## reached into its own link and reconnected would be a scene that decides where a person
+## plays — and the same scene is instantiated by a shell that already knows. So this
+## announces, and a launcher acts; offline it says so rather than pretending.
+func _on_server_chosen(address: String) -> void:
+	server_chosen.emit(address)
+
+	if hud != null:
+		hud.notice("Chosen: %s" % address)
+
+
+func _on_progress(state: Dictionary) -> void:
+	if hud == null:
+		return
+
+	var mine := int(state["player_id"]) == bridge.local_player_id
+
+	hud.notice("%s %s (%d)" % [
+		"You earned" if mine else "Somebody earned",
+		str(state["title"]),
+		int(state["value"]),
+	])
+
+
 func _build_screens() -> void:
 	screens = DotScreenStack.new()
 	screens.name = "Screens"
@@ -407,6 +545,16 @@ func _build_screens() -> void:
 
 	var registered := screens.register(menu)
 	DotLog.result(CHANNEL, "registering the spawn menu", registered)
+
+	# The server list. [b]Registered even offline[/b], because a person running this
+	# locally is exactly the person who wants to find somewhere to play — and a screen that
+	# only existed on a connected client would be one nobody could reach from the menu.
+	browser = PlaygroundBrowser.new()
+	browser.name = "Servers"
+	browser.joined.connect(_on_server_chosen)
+	DotLog.result(
+		CHANNEL, "registering the server browser", screens.register(browser)
+	)
 
 
 func _process(_delta: float) -> void:
@@ -506,6 +654,14 @@ func active_sampler() -> DotFpsSampler:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	# [b]Voice first, and before the player check.[/b] Somebody with no player yet — mid
+	# signon, or spectating — should still be able to talk, and a release swallowed by an
+	# early return is a microphone left open. `handle_event` sees both edges, which every
+	# branch below this deliberately does not.
+	if voice != null and voice.handle_event(event):
+		get_viewport().set_input_as_handled()
+		return
+
 	if player == null:
 		return
 

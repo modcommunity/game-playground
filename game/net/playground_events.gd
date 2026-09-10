@@ -39,6 +39,14 @@ enum Kind {
 	NOTICE,
 	## A player got into or out of a vehicle.
 	SEAT,
+	## One chat line, already routed, sanitised and addressed by [DotChatRouter].
+	CHAT,
+	## A player's health, armour or death. See [PlaygroundArena].
+	COMBAT,
+	## The match clock: warmup, a round starting, a score.
+	MATCH,
+	## Something somebody earned: an achievement or a personal best.
+	PROGRESS,
 }
 
 enum Ask {
@@ -69,6 +77,12 @@ enum Ask {
 	## get into the car it is already sitting in — which the server then refuses, so the
 	## symptom is a use key that stops working once you are in something.
 	USE_VEHICLE,
+	## I typed a line. The server decides what channel it lands on and who hears it.
+	SAY,
+	## Rock the vote, nominate, or cast one. The body is a token a [DotVoteSource] resolves.
+	VOTE,
+	## Here is what I want to spawn with.
+	LOADOUT,
 }
 
 ## Every decoder returns an `ok` alongside its fields, and every caller checks it.
@@ -364,3 +378,249 @@ static func write_index(index: int) -> PackedByteArray:
 
 static func read_index(r: DotNetReader) -> int:
 	return r.read_uint(8)
+
+
+# --- CHAT ------------------------------------------------------------------
+
+const CHAT_BYTES := 200
+const CHAT_CHANNEL_BYTES := 24
+const CHAT_KEY_BYTES := 48
+const CHAT_KIND_BITS := 4
+
+
+## One chat line, from [method DotChatMessage.to_dictionary], plus who said it.
+##
+## [b]Encoded field by field rather than as JSON.[/b] A JSON body is a variable-length blob
+## a reader cannot bound and a hostile server could make enormous, and it costs about three
+## times the bytes for a message whose whole point is that it is small and frequent.
+##
+## The `x` (meta) field is not carried as a dictionary — what this game needs from it is one
+## number, the player the line belongs to, so that is a bounded field and the reader puts it
+## back where [method DotChatMessage.from_dictionary] finds it. The kind travels as an
+## **index into [constant DotChatMessage.KIND_NAMES]**, one table used in both directions,
+## which is the lesson dot-moderation paid for when a stored voice mute loaded as a warning.
+static func write_chat(wire: Dictionary) -> PackedByteArray:
+	var writer := DotNetWriter.new()
+	writer.write_varint(int(wire.get("n", 0)))
+	writer.write_uint(int(wire.get("t", 0)), 32)
+	writer.write_string(str(wire.get("c", "")), CHAT_CHANNEL_BYTES)
+	writer.write_uint(
+		maxi(0, DotChatMessage.kind_from_name(str(wire.get("k", "say")))), CHAT_KIND_BITS
+	)
+	writer.write_string(str(wire.get("s", "")), CHAT_KEY_BYTES)
+	writer.write_string(str(wire.get("d", "")), NAME_BYTES)
+	writer.write_string(str(wire.get("w", "")), CHAT_KEY_BYTES)
+	writer.write_string(str(wire.get("m", "")), CHAT_BYTES)
+
+	var meta: Variant = wire.get("x")
+	var player_id: int = 0
+
+	if typeof(meta) == TYPE_DICTIONARY:
+		player_id = int((meta as Dictionary).get("p", 0))
+
+	writer.write_varint(maxi(0, player_id))
+	return writer.to_bytes()
+
+
+static func read_chat(reader: DotNetReader) -> Dictionary:
+	var out := {
+		"n": reader.read_varint(),
+		"t": reader.read_uint(32),
+		"c": reader.read_string(CHAT_CHANNEL_BYTES),
+	}
+
+	var kind := reader.read_uint(CHAT_KIND_BITS)
+	out["k"] = DotChatMessage.KIND_NAMES[kind] \
+		if kind >= 0 and kind < DotChatMessage.KIND_NAMES.size() else "say"
+
+	out["s"] = reader.read_string(CHAT_KEY_BYTES)
+	out["d"] = reader.read_string(NAME_BYTES)
+	out["w"] = reader.read_string(CHAT_KEY_BYTES)
+	out["m"] = reader.read_string(CHAT_BYTES)
+
+	var player_id := reader.read_varint()
+
+	if player_id > 0:
+		out["x"] = {"p": player_id}
+
+	out["ok"] = reader.ok()
+	return out
+
+
+static func write_say(channel_id: StringName, text: String) -> PackedByteArray:
+	var writer := DotNetWriter.new()
+	writer.write_string(String(channel_id), CHAT_CHANNEL_BYTES)
+	writer.write_string(text, CHAT_BYTES)
+	return writer.to_bytes()
+
+
+static func read_say(reader: DotNetReader) -> Dictionary:
+	var out := {
+		"channel": reader.read_string(CHAT_CHANNEL_BYTES),
+		"text": reader.read_string(CHAT_BYTES),
+	}
+	out["ok"] = reader.ok()
+	return out
+
+
+# --- COMBAT ----------------------------------------------------------------
+
+## Health and armour are 0..255 here, which is a shooter's whole range.
+const HEALTH_BITS := 8
+
+
+## Somebody's health changed, or they died.
+##
+## [b]Health is replicated as an event rather than as a [DotNetVar].[/b] It changes on a
+## hit and not on a tick, so a per-tick field would send an unchanged byte at the snapshot
+## rate for every player — and dot-net's delta encoding would still have to look at it.
+## What matters about health is the moment it moves.
+static func write_combat(
+	player_id: int, health: int, armour: int, attacker_id: int, died: bool
+) -> PackedByteArray:
+	var writer := DotNetWriter.new()
+	writer.write_varint(player_id)
+	writer.write_uint(clampi(health, 0, 255), HEALTH_BITS)
+	writer.write_uint(clampi(armour, 0, 255), HEALTH_BITS)
+	writer.write_varint(maxi(0, attacker_id))
+	writer.write_bool(died)
+	return writer.to_bytes()
+
+
+static func read_combat(reader: DotNetReader) -> Dictionary:
+	var out := {
+		"player_id": reader.read_varint(),
+		"health": reader.read_uint(HEALTH_BITS),
+		"armour": reader.read_uint(HEALTH_BITS),
+		"attacker_id": reader.read_varint(),
+		"died": reader.read_bool(),
+	}
+	out["ok"] = reader.ok()
+	return out
+
+
+# --- MATCH -----------------------------------------------------------------
+
+const MATCH_STATE_BITS := 4
+const MATCH_LABEL_BYTES := 48
+
+
+## The match clock, once a second and on every transition.
+##
+## [b]Sent rather than derived, because a mirroring client's [DotMatch] never runs.[/b]
+## Nothing ticks it, so `seconds_remaining()` is computed from a `_current_tick` that is
+## still zero — not a stale value, a value nothing had ever written. game-arena shipped a
+## client showing `IDLE` for ever while the server was playing a round.
+static func write_match(
+	state: int, seconds_left: float, round_number: int, label: String
+) -> PackedByteArray:
+	var writer := DotNetWriter.new()
+	writer.write_uint(clampi(state, 0, 15), MATCH_STATE_BITS)
+	writer.write_uint(clampi(int(seconds_left), 0, 65535), 16)
+	writer.write_uint(clampi(round_number, 0, 255), 8)
+	writer.write_string(label, MATCH_LABEL_BYTES)
+	return writer.to_bytes()
+
+
+static func read_match(reader: DotNetReader) -> Dictionary:
+	var out := {
+		"state": reader.read_uint(MATCH_STATE_BITS),
+		"seconds_left": float(reader.read_uint(16)),
+		"round": reader.read_uint(8),
+		"label": reader.read_string(MATCH_LABEL_BYTES),
+	}
+	out["ok"] = reader.ok()
+	return out
+
+
+# --- PROGRESS --------------------------------------------------------------
+
+const PROGRESS_ID_BYTES := 40
+const PROGRESS_TEXT_BYTES := 96
+
+
+## Something a player earned. Text, not a rule — the rules stay on the server, because a
+## client that held them could tell a player they had earned something the server disagreed
+## about, and the server is the one filing it.
+static func write_progress(
+	player_id: int, id: StringName, title: String, value: int
+) -> PackedByteArray:
+	var writer := DotNetWriter.new()
+	writer.write_varint(player_id)
+	writer.write_string(String(id), PROGRESS_ID_BYTES)
+	writer.write_string(title, PROGRESS_TEXT_BYTES)
+	writer.write_varint(maxi(0, value))
+	return writer.to_bytes()
+
+
+static func read_progress(reader: DotNetReader) -> Dictionary:
+	var out := {
+		"player_id": reader.read_varint(),
+		"id": reader.read_string(PROGRESS_ID_BYTES),
+		"title": reader.read_string(PROGRESS_TEXT_BYTES),
+		"value": reader.read_varint(),
+	}
+	out["ok"] = reader.ok()
+	return out
+
+
+# --- VOTES AND LOADOUTS ----------------------------------------------------
+
+const VOTE_TOKEN_BYTES := 48
+const LOADOUT_SLOT_BYTES := 32
+const LOADOUT_MAX_SLOTS := 8
+const LOADOUT_COUNT_BITS := 4
+
+
+## What a client asks the vote for: `rtv`, `nominate <id>`, `vote <n>`, `extend`.
+##
+## A token rather than an enum, because the thing voted for is an id and what an id means
+## is a [DotVoteSource]'s business — which is what lets one engine drive dot-server's games
+## and dot-map's maps without this file naming either.
+static func write_vote(token: String) -> PackedByteArray:
+	var writer := DotNetWriter.new()
+	writer.write_string(token, VOTE_TOKEN_BYTES)
+	return writer.to_bytes()
+
+
+static func read_vote(reader: DotNetReader) -> String:
+	return reader.read_string(VOTE_TOKEN_BYTES)
+
+
+## What a player wants to spawn with, as slot/item pairs.
+##
+## [b]Ids only, and the server validates them against a schema and an entitlement set
+## without loading anything.[/b] That is dot-loadout's one idea, and it is why this is a
+## handful of strings rather than a document. A client that could make the server *repair*
+## its way to a legal loadout could put anything in any slot and have the server pick the
+## nearest legal thing, so the server refuses rather than conforms on this direction.
+static func write_loadout(pairs: Array) -> PackedByteArray:
+	var writer := DotNetWriter.new()
+	var count := mini(pairs.size(), LOADOUT_MAX_SLOTS)
+	writer.write_uint(count, LOADOUT_COUNT_BITS)
+
+	for index in count:
+		var pair: Array = pairs[index]
+		writer.write_string(str(pair[0]), LOADOUT_SLOT_BYTES)
+		writer.write_string(str(pair[1]), LOADOUT_SLOT_BYTES)
+
+	return writer.to_bytes()
+
+
+static func read_loadout(reader: DotNetReader) -> Dictionary:
+	var count := reader.read_uint(LOADOUT_COUNT_BITS)
+	var pairs: Array = []
+
+	for _index in mini(count, LOADOUT_MAX_SLOTS):
+		var slot := reader.read_string(LOADOUT_SLOT_BYTES)
+		var item := reader.read_string(LOADOUT_SLOT_BYTES)
+
+		# Read past the end returns zeros rather than failing — dot-timer found that with
+		# a truncated replay that parsed as a valid replay of nothing — so the loop stops
+		# on the reader rather than on the count.
+		if not reader.ok():
+			break
+
+		pairs.append([slot, item])
+
+	return {"pairs": pairs, "ok": reader.ok()}

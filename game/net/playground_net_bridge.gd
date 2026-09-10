@@ -43,6 +43,27 @@ signal notice_received(player_id: int, text: String)
 ## A player got into or out of a vehicle. Client side; the HUD and the camera read it.
 signal seat_changed(player_id: int, seated: bool)
 
+## Somebody pressed Enter. Server side, and the only thing this bridge does with chat.
+##
+## [b]The bridge carries chat and decides nothing about it.[/b] Who may say what, on which
+## channel, how often and who hears it are [DotChatRouter]'s.
+signal say_requested(peer_id: int, channel_id: StringName, text: String)
+
+## Somebody typed a vote command, or published a loadout. Server side.
+signal vote_requested(peer_id: int, token: String)
+signal loadout_requested(peer_id: int, pairs: Array)
+
+## A voice frame arrived. Server side; the payload is unparsed and must not be trusted —
+## [method DotVoiceRouter.relay] is what stamps the speaker.
+signal voice_requested(peer_id: int, payload: PackedByteArray)
+
+## Client side.
+signal chat_received(wire: Dictionary)
+signal voice_arrived(payload: PackedByteArray)
+signal combat_received(state: Dictionary)
+signal match_received(state: Dictionary)
+signal progress_received(state: Dictionary)
+
 var game: Playground = null
 var net: DotNetManager = null
 var link: PlaygroundNetLink = null
@@ -624,6 +645,33 @@ func receive_input(peer_id: int, payload: PackedByteArray) -> DotResult:
 	return net.input_buffer_for(peer_id).push(packet)
 
 
+## A voice frame off [method PlaygroundNetLink.send_voice], in whichever direction.
+##
+## [b]Not a [PlaygroundEvent].[/b] Voice is fifty packets a second and every event here is
+## reliable, so a talk spurt would put a hundred retransmittable messages in front of a
+## prop spawn. It also does not go through [DotNetManager]: the registry seals a message
+## set and hashes it, and adding a fifty-hertz opaque blob buys nothing — the packet has
+## its own header, sequence and validation in [DotVoicePacket].
+func receive_voice(peer_id: int, payload: PackedByteArray) -> DotResult:
+	if payload.is_empty():
+		return DotResult.fail(DotError.CODE_INVALID, "An empty voice frame.")
+
+	if net != null and net.is_server:
+		if peer_id <= 0 or player_for_peer(peer_id) == 0:
+			# A peer with nobody in the world. Refused rather than relayed: the router
+			# stamps the speaker from this id, so relaying one that belongs to nobody
+			# puts a voice in the game with no name on it.
+			return DotResult.fail(
+				DotError.CODE_FORBIDDEN, "That peer has nobody in the world."
+			)
+
+		voice_requested.emit(peer_id, payload)
+		return DotResult.success(null)
+
+	voice_arrived.emit(payload)
+	return DotResult.success(null)
+
+
 func receive_event(payload: PackedByteArray) -> DotResult:
 	if net == null:
 		return DotResult.fail(DotError.CODE_STATE, "No manager.")
@@ -817,6 +865,22 @@ func _on_request(message: DotNetMessage) -> void:
 			_checkpoint(id, PlaygroundEvents.read_index(reader))
 		PlaygroundEvents.Ask.RTV:
 			game.rock_the_vote(id)
+		PlaygroundEvents.Ask.SAY:
+			var said := PlaygroundEvents.read_say(reader)
+
+			if bool(said["ok"]):
+				# Emitted rather than acted on. Everything about what a line means is
+				# [DotChatRouter]'s, and the router is [PlaygroundModule]'s.
+				say_requested.emit(
+					peer_id, StringName(str(said["channel"])), str(said["text"])
+				)
+		PlaygroundEvents.Ask.VOTE:
+			vote_requested.emit(peer_id, PlaygroundEvents.read_vote(reader))
+		PlaygroundEvents.Ask.LOADOUT:
+			var wanted := PlaygroundEvents.read_loadout(reader)
+
+			if bool(wanted["ok"]):
+				loadout_requested.emit(peer_id, wanted["pairs"])
 		PlaygroundEvents.Ask.USE_VEHICLE:
 			var used := game.use_vehicle(id)
 
@@ -949,6 +1013,26 @@ func _on_event(message: DotNetMessage) -> void:
 				notice_received.emit(int(notice["player_id"]), str(notice["text"]))
 		PlaygroundEvents.Kind.SEAT:
 			_apply_seat(reader)
+		PlaygroundEvents.Kind.CHAT:
+			var wire := PlaygroundEvents.read_chat(reader)
+
+			if bool(wire["ok"]):
+				chat_received.emit(wire)
+		PlaygroundEvents.Kind.COMBAT:
+			var hit := PlaygroundEvents.read_combat(reader)
+
+			if bool(hit["ok"]):
+				combat_received.emit(hit)
+		PlaygroundEvents.Kind.MATCH:
+			var clock := PlaygroundEvents.read_match(reader)
+
+			if bool(clock["ok"]):
+				match_received.emit(clock)
+		PlaygroundEvents.Kind.PROGRESS:
+			var earned := PlaygroundEvents.read_progress(reader)
+
+			if bool(earned["ok"]):
+				progress_received.emit(earned)
 
 
 func _apply_hello(reader: DotNetReader) -> void:
@@ -1219,6 +1303,98 @@ func _tell(peer_id: int, kind: int, body: PackedByteArray) -> void:
 	if net == null or not net.is_server or peer_id <= 0 or body.is_empty():
 		return
 	net.send(PlaygroundEvent.of(kind, body), peer_id)
+
+
+## One chat line to one peer. Server side, and what [member DotChatRouter.send_fn] points
+## at.
+##
+## [b]Peer by peer, never a broadcast, and that is the router's decision rather than this
+## one's.[/b] It has already worked out exactly who may hear a line — everybody, a radius,
+## two people in a whisper — and handing the result to a broadcast would throw that away.
+func send_chat(peer_id: int, wire: Dictionary) -> void:
+	_tell(peer_id, PlaygroundEvents.Kind.CHAT, PlaygroundEvents.write_chat(wire))
+
+
+## Somebody's health changed, or they died. Server side.
+func broadcast_combat(
+	player_id: int, health: int, armour: int, attacker_id: int, died: bool
+) -> void:
+	_broadcast(
+		PlaygroundEvents.Kind.COMBAT,
+		PlaygroundEvents.write_combat(player_id, health, armour, attacker_id, died)
+	)
+
+
+## The match clock. Server side.
+##
+## [b]Sent rather than derived, because a mirroring client's [DotMatch] never runs.[/b]
+## Nothing ticks it, so `seconds_remaining()` is computed from a tick that is still zero —
+## not a stale value, a value nothing had ever written. game-arena shipped a client that
+## showed `IDLE` for ever while the server was playing a round.
+func broadcast_match(
+	state: int, seconds_left: float, round_number: int, label: String
+) -> void:
+	_broadcast(
+		PlaygroundEvents.Kind.MATCH,
+		PlaygroundEvents.write_match(state, seconds_left, round_number, label)
+	)
+
+
+## Something somebody earned. Server side.
+func broadcast_progress(
+	player_id: int, id: StringName, title: String, value: int
+) -> void:
+	_broadcast(
+		PlaygroundEvents.Kind.PROGRESS,
+		PlaygroundEvents.write_progress(player_id, id, title, value)
+	)
+
+
+## Client side: say something.
+func say(channel_id: StringName, text: String) -> void:
+	if net == null or net.is_server or text.strip_edges() == "":
+		return
+
+	_ask(PlaygroundEvents.Ask.SAY, PlaygroundEvents.write_say(channel_id, text))
+
+
+## Client side: rock the vote, nominate, or cast one.
+func vote(token: String) -> void:
+	if net == null or net.is_server or token.strip_edges() == "":
+		return
+
+	_ask(PlaygroundEvents.Ask.VOTE, PlaygroundEvents.write_vote(token))
+
+
+## Client side: publish what to spawn with.
+func publish_loadout(pairs: Array) -> void:
+	if net == null or net.is_server:
+		return
+
+	_ask(PlaygroundEvents.Ask.LOADOUT, PlaygroundEvents.write_loadout(pairs))
+
+
+## Everybody who has said they can receive. Server side.
+##
+## [b]The set chat and voice are addressed against, and deliberately not
+## [method DotServer.sessions].[/b] A session exists from the moment a socket connects; a
+## ready peer is one that has built its scene and can be sent to.
+func ready_peers() -> PackedInt32Array:
+	var out := PackedInt32Array()
+
+	for peer_id in _ready_peers.keys():
+		out.append(int(peer_id))
+
+	return out
+
+
+func peer_is_ready(peer_id: int) -> bool:
+	return _ready_peers.has(peer_id)
+
+
+## Takes a peer off the broadcast set without touching anything else. Server side.
+func mark_not_ready(peer_id: int) -> void:
+	_ready_peers.erase(peer_id)
 
 
 ## The ordered style table, for a test that has to check how it was BUILT rather than

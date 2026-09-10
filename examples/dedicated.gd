@@ -23,6 +23,20 @@ var _failures := PackedStringArray()
 
 var server: DotServer = null
 var game: Playground = null
+var platform: PlaygroundPlatform = null
+
+
+## The loaded module, looked up rather than kept.
+##
+## [b]Looked up every time, because `_test_module_unloads_cleanly` unloads it.[/b] A field
+## holding it would be a freed object the moment that section ran, and every section after
+## it would be testing a use-after-free rather than the thing it names.
+##
+## Typed as [DotModule] rather than as its own class, because `playground_module.gd` has
+## **no `class_name`** — it is loaded by path, which is the shape a module delivered in a
+## dot-cloud pack must have. Its fields come back through `get()` for the same reason.
+func _module() -> DotModule:
+	return server.modules.get_module("playground")
 
 
 func _ready() -> void:
@@ -43,6 +57,13 @@ func _run() -> void:
 		_test_zone_workflow()
 		_test_prop_commands()
 		_test_permissions()
+		_test_services()
+		await _test_moderation()
+		_test_arena()
+		_test_waves()
+		await _test_progress()
+		_test_vote()
+		_test_identity()
 		_test_disconnect_is_handled()
 		await _test_module_unloads_cleanly()
 
@@ -189,6 +210,23 @@ func _boot() -> void:
 
 	_check(game.maps.current != null, "the game loaded a map",
 		String(game.maps.current.id) if game.maps.current else "-")
+
+	# [b]The identity half, before the modules.[/b] [DotPlatformModule] refuses to load
+	# without a [DotPlatformHub] in the registry, and building the hub is awaited work —
+	# which is why it is here, in the application, rather than inside a module's
+	# `_module_load`, which dot-server's module host does not await.
+	platform = PlaygroundPlatform.new()
+	platform.name = "Identity"
+	platform.directory = "user://pg_dedicated_identity"
+	add_child(platform)
+
+	var identity: DotResult = await platform.setup()
+	_check(identity.ok, "profiles and avatars are up", str(identity.error))
+
+	var platform_module := server.modules.load_module(
+		"res://addons/dot_platform/dot_platform_module.gd"
+	)
+	_check(platform_module.ok, "the platform module loads", str(platform_module.error))
 
 	var loaded := server.modules.load_module("res://game/playground_module.gd")
 
@@ -488,6 +526,462 @@ func _test_permissions() -> void:
 ## Nothing here had ever disconnected: every other test in this file adds its players
 ## directly and the module is torn down at the end. So the bug needed a real browser
 ## client to show, and this is the check that means it will not need one again.
+## Chat, voice, and the one join between them that has to work.
+func _test_services() -> void:
+	print("")
+	print("chat and voice")
+
+	var services: PlaygroundServices = _module().get("services")
+
+	_check(services != null, "the services are up")
+	_check(
+		services.chat != null and services.chat.channel_ids().size() == 4,
+		"with four chat channels (%d)"
+			% (services.chat.channel_ids().size() if services.chat != null else -1)
+	)
+	_check(
+		services.chat.channel(PlaygroundServices.CHANNEL_NEAR).scope
+			== DotChatChannel.Scope.RADIUS,
+		"one of which is a radius, so a build is a conversation"
+	)
+	_check(
+		services.chat.channel(PlaygroundServices.CHANNEL_NEAR).backlog == 0,
+		"and has no backlog, because a line said quietly beside a build must not be "
+		+ "replayed to a stranger who was not standing there"
+	)
+
+	# [b]THE join.[/b] dot-chat consults a `dot_mute_source` and dot-moderation publishes
+	# one, and neither imports the other — so the only thing that makes a gag work is that
+	# something is registered under that name.
+	_check(
+		DotRegistry.has(DotModerationManager.MUTE_SERVICE),
+		"a mute source is registered, which is the only thing that makes a gag work"
+	)
+	_check(
+		DotRegistry.has(DotModerationManager.BAN_SERVICE),
+		"and a ban source, which dot-server's admission check consults"
+	)
+
+	# [b]Voice is the whole server here, and the near channel is text's.[/b] The other two
+	# games chose differently and all three are right for what they are — a lobby you can
+	# see all of, an arena bigger than a screen, and a sandbox that is both at once.
+	_check(
+		services.voice != null
+			and services.voice.default_channel == DotVoiceRouter.Channel.ALL,
+		"voice reaches the whole server, and the near channel is text's"
+	)
+	_check(
+		services.voice.config.format_fingerprint()
+			== PlaygroundServices.voice_config().format_fingerprint(),
+		"and its format is the one a client builds from the same file"
+	)
+
+	# dot-server's own chat is cancelled rather than run beside the router.
+	var legacy := server.events.fire("player_chat", {
+		"userid": 1, "name": "Nobody", "text": "hello", "team_only": false,
+	})
+	_check(
+		legacy.cancelled,
+		"dot-server's own chat broadcast is cancelled, so there is exactly one path"
+	)
+
+	# The wire, both directions. Every encoder against its decoder, because the two have
+	# to be exact inverses and nothing can check that for you.
+	var line := DotChatMessage.make(
+		DotChatMessage.Kind.SAY, PlaygroundServices.CHANNEL_NEAR, "7", "Ada", "over here"
+	)
+	line.seq = 3
+
+	var wire := line.to_dictionary()
+	wire["x"] = {"p": 7}
+
+	var back := PlaygroundEvents.read_chat(
+		DotNetReader.new(PlaygroundEvents.write_chat(wire))
+	)
+	_check(bool(back["ok"]), "a chat line round-trips")
+	_check(String(back["m"]) == "over here", "with the text")
+	_check(
+		String(back["c"]) == String(PlaygroundServices.CHANNEL_NEAR),
+		"and the channel it was said on"
+	)
+	_check(
+		typeof(back.get("x")) == TYPE_DICTIONARY
+			and int((back["x"] as Dictionary).get("p", 0)) == 7,
+		"and who said it, which is the one meta field this wire carries"
+	)
+
+	# Every value of the enum, because dot-moderation's bug was exactly one value with no
+	# case — and the two ends of a serialisation are as capable of never meeting as the
+	# two ends of a wire.
+	var kinds_ok := true
+
+	for kind in DotChatMessage.Kind.values():
+		var one := DotChatMessage.make(
+			kind as DotChatMessage.Kind, PlaygroundServices.CHANNEL_ALL, "1", "Ada", "x"
+		)
+		var round_trip := PlaygroundEvents.read_chat(
+			DotNetReader.new(PlaygroundEvents.write_chat(one.to_dictionary()))
+		)
+
+		if String(round_trip["k"]) != one.kind_name():
+			kinds_ok = false
+
+	_check(kinds_ok, "every chat kind survives the wire, not just the common one")
+
+
+## A gag, written and read back off disk.
+func _test_moderation() -> void:
+	print("")
+	print("moderation")
+
+	var services: PlaygroundServices = _module().get("services")
+	var subject := DotPunishmentSubject.for_uid("uid-pg-test")
+
+	var gagged: DotResult = await services.moderation.issue(
+		DotPunishment.Kind.GAG, subject, "testing", "console", 60
+	)
+	_check(gagged.ok, "a gag is issued and stored", str(gagged.error))
+
+	var reloaded := DotModerationManager.new()
+	reloaded.store = DotPunishmentStoreFile.new(services.punishments_path)
+	reloaded.register_mute_source = false
+	reloaded.register_ban_source = false
+	add_child(reloaded)
+	reloaded.load_all()
+
+	var found := reloaded.active_of_kind(subject, DotPunishment.Kind.GAG)
+	_check(
+		found != null and found.kind == DotPunishment.Kind.GAG,
+		"and comes back off disk as a GAG rather than as a WARN",
+		"the kind is written and read through one table for exactly this reason"
+	)
+
+	var muted: DotResult = await services.moderation.issue(
+		DotPunishment.Kind.VOICE_MUTE, subject, "testing", "console", 60
+	)
+	_check(muted.ok, "a voice mute is issued", str(muted.error))
+	_check(
+		services.moderation.is_voice_muted_key(subject),
+		"and reads back as a voice mute rather than as a warning"
+	)
+	reloaded.queue_free()
+
+
+## Health, weapons that hurt, and a round.
+func _test_arena() -> void:
+	print("")
+	print("the arena")
+
+	var arena: PlaygroundArena = _module().get("arena")
+
+	_check(arena != null, "the arena is built")
+	_check(
+		not arena.enabled,
+		"and is OFF by default",
+		"a server where somebody can shoot you while you are building is a different "
+		+ "server, and an addon must not turn one into the other silently"
+	)
+
+	# The schema, which is what a dedicated server validates a loadout against without
+	# loading a single model.
+	var schema := arena.loadouts.schema
+	var problems := schema.validate()
+	_check(problems.ok, "the loadout schema validates", str(problems.error))
+	_check(
+		schema.slot(&"primary") != null and schema.slot(&"primary").required
+			and schema.slot(&"primary").default_item != &"",
+		"and its required slot has a default",
+		"a required slot with none cannot be repaired, so a player who has never "
+		+ "chosen could never spawn"
+	)
+
+	# [b]Entitlements default to nothing, and that default is the important one.[/b] A
+	# server that granted everything would work perfectly in every test, ship, and
+	# quietly be a game where every unlock is free — which nobody reports as a bug.
+	var free_only := schema.choices_for(&"primary", DotLoadoutEntitlements.none())
+	var everything := schema.choices_for(&"primary", DotLoadoutEntitlements.everything())
+	_check(
+		everything.size() > free_only.size(),
+		"and something is locked (%d free of %d)" % [free_only.size(), everything.size()]
+	)
+
+	_run_command("pg_arena on")
+	_check(arena.enabled, "the console turns it on")
+
+	arena.admit(&"u900", "Alice")
+	arena.admit(&"u901", "Bob")
+
+	var alice := arena.health_of(&"u900")
+	_check(alice != null and alice.health == PlaygroundArena.MAX_HEALTH,
+		"somebody admitted starts on full health")
+
+	# [b]Spawn protection is counted in ticks, and this is what it is for.[/b] A player
+	# shot on the tick they appear has not had a game.
+	_check(alice.is_protected(0), "and is protected on the tick they appear")
+
+	# [b]Through the arena's own tick, not the health's.[/b] Spawn protection is checked
+	# by `DotHealth.apply` against the tick the MANAGER last saw, and ticking only the
+	# health leaves the manager on zero — so the protection reads as expired everywhere
+	# except in the one place that decides. A test that ticked the health alone would pass
+	# its own assertion and then be refused by the thing it was setting up.
+	for step in range(game.tick_rate * 5):
+		arena.tick(step, 1.0 / float(game.tick_rate))
+
+	_check(
+		not alice.is_protected(arena._tick),
+		"and is not, five seconds later"
+	)
+
+	var hit := arena.hurt(&"u901", &"u900", 30.0, 5.0)
+	_check(hit != null and not hit.refused, "a hit lands", str(hit))
+	_check(
+		alice.health < PlaygroundArena.MAX_HEALTH,
+		"and takes health off (%.0f)" % alice.health
+	)
+
+	# Falloff. [b]The whole reason it is worth having[/b]: a shot from across the map has
+	# to be worth less than one at point blank, or range is not a decision.
+	var far := arena.hurt(&"u901", &"u900", 30.0, 200.0)
+	_check(
+		far != null and far.amount < hit.amount,
+		"and one from across the map does less (%.1f against %.1f)"
+			% [far.amount if far != null else -1.0, hit.amount]
+	)
+
+	# Self damage is on and scaled, because launching a boulder at your own feet hurting
+	# you is the joke the weapon exists for — and hurting you as much as somebody else is
+	# not.
+	var own := arena.hurt(&"u900", &"u900", 30.0, 1.0)
+	_check(
+		own != null and not own.refused and own.amount < 30.0,
+		"self damage lands and is scaled down (%.1f)"
+			% (own.amount if own != null else -1.0)
+	)
+
+	arena.release(&"u900")
+	arena.release(&"u901")
+	_run_command("pg_arena off")
+	_check(not arena.enabled, "and the console turns it off again")
+
+
+## NPCs the server releases.
+func _test_waves() -> void:
+	print("")
+	print("waves")
+
+	var waves: PlaygroundWaves = _module().get("waves")
+
+	_check(waves != null, "the wave layer is built")
+	_check(not waves.is_enabled(), "and is off by default")
+	_check(
+		waves.spawner != null and not waves.spawner.two_dimensional,
+		"its spawner is a 3D one"
+	)
+	_check(
+		PlaygroundWaves.shared_catalogue().size() == 3,
+		"with three kinds (%d)" % PlaygroundWaves.shared_catalogue().size()
+	)
+
+	# [b]Line of sight is ON here and off in the other two games, and that is the point of
+	# the flag.[/b] A sandbox has walls, pillars and whatever somebody built; an NPC that
+	# saw through all of it would make cover meaningless.
+	var runner := PlaygroundWaves.shared_catalogue().get_npc(&"runner")
+	_check(
+		runner != null and runner.require_line_of_sight,
+		"and they need to actually see you"
+	)
+
+	_run_command("pg_waves on")
+	_check(waves.is_enabled(), "the console turns them on")
+
+	# The director wants somebody to pace against. With nobody in the world it must not
+	# spawn anything — a wave released at an empty server is a wave nobody meets and a
+	# population budget spent on nothing.
+	for _step in range(120):
+		waves.tick(_step, 1.0 / float(game.tick_rate))
+
+	_check(
+		waves.count() == 0,
+		"and release nothing with nobody playing (%d)" % waves.count(),
+		"the director paces against players, and there are none"
+	)
+
+	_run_command("pg_waves off")
+	_check(not waves.is_enabled(), "the console turns them off")
+
+
+## Statistics, and what they are worth.
+func _test_progress() -> void:
+	print("")
+	print("statistics and achievements")
+
+	var progress: PlaygroundProgress = _module().get("progress")
+
+	_check(progress != null, "the progress layer is built")
+	_check(
+		progress.stats != null and progress.stats.schema.size() >= 9,
+		"with a stats schema (%d)"
+			% (progress.stats.schema.size() if progress.stats != null else -1)
+	)
+	_check(progress.link != null, "and a link from the stats to the achievements")
+
+	# [b]Every stat an achievement watches has to be one the game declares.[/b] An
+	# achievement watching a stat nothing reports never unlocks, nothing errors, and the
+	# only symptom is a player who did the thing and was not told.
+	var schema := PlaygroundProgress.stats_schema()
+	var missing := PackedStringArray()
+
+	for stat in progress.achievements.catalogue.watched_stats():
+		if not schema.has(stat):
+			missing.append(String(stat))
+
+	_check(
+		missing.is_empty(),
+		"every watched stat is one the game declares",
+		"missing: %s" % str(missing)
+	)
+
+	var problems := progress.achievements.catalogue.validate()
+	_check(problems.ok, "the catalogue validates", str(problems.error))
+
+	progress.begin("pg-test")
+
+	for _one in range(60):
+		progress.achievements.record("pg-test", &"props", 1.0)
+
+	_check(
+		progress.achievements.is_unlocked("pg-test", &"build_50"),
+		"fifty spawns unlocks the first tier"
+	)
+	_check(
+		not progress.achievements.is_unlocked("pg-test", &"build_500"),
+		"and not the second"
+	)
+
+	# A LOWEST merge, which is the other end of dot-stats' four kinds — and the reason
+	# `DotAchievementRule.Merge` is deliberately the same table: the two would otherwise
+	# disagree about what a new reading does to an old one.
+	progress.achievements.record("pg-test", &"fastest_run", 40.0)
+	progress.achievements.record("pg-test", &"fastest_run", 18.0)
+	progress.achievements.record("pg-test", &"fastest_run", 55.0)
+	_check(
+		progress.achievements.is_unlocked("pg-test", &"under_20"),
+		"a best time keeps the LOWEST reading, not the newest"
+	)
+
+	var written: DotResult = await progress.achievements.flush()
+	_check(written.ok, "progress writes to disk", str(written.error))
+
+
+## What plays next, decided by the players.
+func _test_vote() -> void:
+	print("")
+	print("the vote")
+
+	var vote: PlaygroundVote = _module().get("vote")
+
+	_check(vote != null, "the vote is built")
+	_check(
+		vote.director != null and vote.director.source != null
+			and vote.director.source.is_usable(),
+		"with a source over dot-map's own catalogue",
+		"one engine, two sources — game-hungario votes over games and this votes over "
+		+ "maps, and neither file names the other"
+	)
+
+	var options := vote.director.build_options(2)
+	_check(options.size() > 0, "a ballot has something on it (%d)" % options.size())
+
+	var next := vote.next_in_rotation()
+	_check(next != &"", "something is next in the rotation (%s)" % String(next))
+	_check(
+		game.maps.current == null or next != game.maps.current.id,
+		"and it is not the map that is playing"
+	)
+
+	# Rocking the vote with nobody playing. The threshold is a fraction of the head count
+	# and `rtv_min_players` is 2, so this is refused — which is the check: a refusal that
+	# ARRIVES is a rule that ran, and dot-vote shipped a version where rocking the vote
+	# was refused for ever on the deployment that depends on it.
+	var rocked := vote.director.rock_the_vote(&"u1")
+	_check(
+		rocked != null,
+		"rocking the vote answers rather than doing nothing",
+		str(rocked.error) if not rocked.ok else "accepted"
+	)
+
+	_check(
+		not vote.director.begin_on_apply,
+		"the director does not announce its own change",
+		"the host announces it, which also fires for an operator typing pg_map — both "
+		+ "firing halves every cooldown"
+	)
+
+	_check(
+		vote.director.rules.nomination_seconding,
+		"seconding is allowed, which is what makes MOST_NOMINATED mean anything",
+		"without it every nomination count is exactly 1 and there is nothing to sort by"
+	)
+
+
+## Profiles and avatars: ids and a schema, and no art anywhere.
+func _test_identity() -> void:
+	print("")
+	print("identity")
+
+	_check(platform.hub != null and platform.hub.is_ready(), "the platform is up")
+	_check(
+		server.modules.get_module("platform") != null,
+		"and its module is loaded beside the game's"
+	)
+
+	var schema := PlaygroundPlatform.avatar_schema()
+	var problems := schema.validate_schema()
+
+	# [b]A schema that validates is not a formality.[/b] game-hungario shipped a part that
+	# was its own fallback — a resolution loop that cannot terminate — and its suite never
+	# noticed, because it never validated a schema.
+	_check(problems.ok, "the avatar schema is valid", str(problems.error))
+
+	var legal := DotAvatar.make(&"pg_builder")
+	legal.set_part(&"body", &"body_overalls")
+	legal.set_part(&"hat", &"hat_cap")
+
+	_check(
+		schema.validate(legal, DotAvatarEntitlements.none()).ok,
+		"a free avatar is accepted with no entitlements at all"
+	)
+
+	var locked := DotAvatar.make(&"pg_builder")
+	locked.set_part(&"body", &"body_plain")
+	locked.set_part(&"hat", &"hat_hard")
+
+	# [b]Entitlements default to nothing and that default is the important one.[/b] A
+	# server that granted everything would work perfectly in every test, ship, and quietly
+	# be a game where every unlock is free — which nobody reports as a bug.
+	_check(
+		not schema.validate(locked, DotAvatarEntitlements.none()).ok,
+		"and one nobody has unlocked is refused"
+	)
+	_check(
+		schema.validate(locked, DotAvatarEntitlements.of([&"hat_hard"])).ok,
+		"until they hold it"
+	)
+
+	# [b]The key a statistic is filed under, and the reason dot-platform is here at
+	# all.[/b] dot-stats refuses an account id as a player key before it leaves the
+	# server, and a board is exactly the same kind of record — so the one function that
+	# decides has to give a scoped id when there is an identity stack and something
+	# honest when there is not.
+	var key := PlaygroundPlatform.key_for_session(server, null)
+	_check(key == "", "no session is no key rather than a guessed one")
+
+	_check(
+		PlaygroundProgress.stats_schema().has(&"props"),
+		"the stats schema declares what the game reports"
+	)
+
+
 func _test_disconnect_is_handled() -> void:
 	print("a client disconnecting reaches the module")
 

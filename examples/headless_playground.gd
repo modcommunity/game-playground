@@ -599,9 +599,9 @@ func _test_props() -> void:
 
 	var goal := origin + aim * player.phys_gun.hold_distance
 	_check(
-		crate.node.global_position.distance_to(goal) < 2.0,
+		crate.position().distance_to(goal) < 2.0,
 		"a held crate follows the aim",
-		"%.2f m away" % crate.node.global_position.distance_to(goal)
+		"%.2f m away" % crate.position().distance_to(goal)
 	)
 
 	player.phys_gun.freeze_held()
@@ -1072,6 +1072,109 @@ func _test_a_chaser_commits(playground: Playground) -> void:
 	playground.props.remove(spawned.instance_id)
 	playground.npc_candidates = []
 
+	_test_a_hunter_decides(playground)
+
+
+## The same NPC with a **decision** instead of an `if`: dot-npc-ai's state machine and
+## Quake III's characteristics table.
+##
+## [b]`npc_chaser` is still in the catalogue and is still correct.[/b] What this one adds
+## is a reaction time, a character per NPC, and a machine whose transitions are the design
+## — and keeping both is the only honest way to say what the addon actually bought.
+func _test_a_hunter_decides(playground: Playground) -> void:
+	var spawned := playground.props.spawn(&"npc_hunter", &"bot", Vector3(0.0, 2.0, 0.0))
+
+	if spawned == null:
+		_check(false, "a hunter spawns")
+		return
+
+	var hunter := spawned.node as PlaygroundEntity
+
+	_check(hunter.npc != null, "a hunter has a dot-npc row too")
+	_check(
+		hunter.get("machine") != null,
+		"and a state machine rather than a hand-written if"
+	)
+	_check(
+		hunter.get("character") != null,
+		"and a character, which is what a difficulty setting is instead of"
+	)
+
+	var character: DotNpcAiCharacter = hunter.get("character")
+
+	# [b]Seeded from the instance, and this is the check that matters.[/b] A preset is one
+	# resource, and twenty NPCs sharing it share a seed — so every one of them reacts at
+	# the same moment, which reads as a firing squad rather than as a fight.
+	var second := playground.props.spawn(&"npc_hunter", &"bot", Vector3(4.0, 2.0, 0.0))
+
+	if second != null:
+		var other: DotNpcAiCharacter = (second.node as PlaygroundEntity).get("character")
+		_check(
+			other != null and other.seed_value != character.seed_value,
+			"two hunters do not share a seed",
+			"%d against %d" % [
+				other.seed_value if other != null else -1, character.seed_value
+			]
+		)
+		playground.props.remove(second.instance_id)
+
+	# It starts patrolling, not chasing. A machine whose initial state was wrong would be
+	# an NPC that sprinted at somebody it had not seen.
+	var machine: DotNpcAiMachine = hunter.get("machine")
+	_check(
+		machine.current() == &"patrol",
+		"a hunter starts on patrol (%s)" % String(machine.current())
+	)
+
+	# Somebody walks into view. [b]It must NOT go straight to chasing[/b] — the reaction
+	# time is spent in ALERT, and an NPC that skipped it is one no player can surprise.
+	#
+	# [b]A REAL player, and that is not incidental.[/b] `PlaygroundEntity.target` resolves
+	# a candidate id back through `game.players` and clears the target when it finds
+	# nothing — deliberately, because a disconnected player has no position and steering at
+	# their last one walks the NPC to an empty corner for the whole grace period. A test
+	# with a candidate and no player is therefore a test of that clearing, not of this.
+	var seen := playground.add_player(&"seen", "Seen")
+	seen.teleport(Vector3(0.0, 2.0, -8.0))
+
+	playground.npc_candidates = [
+		DotNpcSenses.Candidate.new(&"seen", Vector3(0, 2, -8), &"player")
+	]
+	playground.npc_senses.update_target(
+		hunter.npc, playground.npc_candidates, 0.0, 8
+	)
+	hunter.entity_tick(1.0 / 128.0)
+
+	_check(
+		machine.current() == &"alert",
+		"and turns to look before it commits (%s)" % String(machine.current()),
+		"reaction time is what makes it an opponent rather than a target"
+	)
+
+	# And then it does commit, once the reaction time has passed.
+	for _step in range(int(128.0 * 1.5)):
+		hunter.entity_tick(1.0 / 128.0)
+
+	_check(
+		machine.current() == &"chase",
+		"and chases once its reaction time has passed (%s)" % String(machine.current())
+	)
+
+	# The target leaves. It searches where they were rather than stopping dead — an NPC
+	# you escape by stepping behind a crate is one nobody has to run from.
+	playground.npc_candidates = []
+	hunter.npc.target_id = &""
+
+	hunter.entity_tick(1.0 / 128.0)
+	_check(
+		machine.current() == &"lost",
+		"and goes looking when it loses them (%s)" % String(machine.current())
+	)
+
+	playground.props.remove(spawned.instance_id)
+	playground.npc_candidates = []
+	playground.remove_player(&"seen")
+
 
 ## An entity is a prop with a script, and the script is loaded by path.
 ##
@@ -1178,14 +1281,14 @@ func _test_entities_run_their_scripts() -> void:
 	_check(chaser != null, "a chaser spawns")
 
 	if chaser != null:
-		var opening := chaser.node.global_position.distance_to(
+		var opening := chaser.position().distance_to(
 			player.global_position
 		)
 
 		for _i in range(300):
 			await get_tree().physics_frame
 
-		var closing := chaser.node.global_position.distance_to(
+		var closing := chaser.position().distance_to(
 			player.global_position
 		)
 
@@ -1424,6 +1527,46 @@ func _test_spawn_menu() -> void:
 		"the menu has a size, which a Control built in code does not get for free",
 		"%.0f x %.0f" % [menu.size.x, menu.size.y]
 	)
+
+	# [b]The server browser, on the same stack and measured the same way.[/b] It is the
+	# second screen this game has built in code, and the failure it can have is the one
+	# dot-ui had five of: `set_anchors_preset` describes how a rectangle FOLLOWS its
+	# parent and changes nothing until something resizes it, so a Control keeps the zero
+	# size it was created with — and every child then lays out inside nothing while being,
+	# by every property, correctly configured. Only a size says so.
+	var servers := PlaygroundBrowser.new()
+	add_child(servers)
+
+	var browser_registered := stack.register(servers)
+	_check(browser_registered.ok, "the server browser registers too")
+
+	var browser_open := stack.push(servers.screen_id())
+	_check(browser_open.ok, "and opens")
+
+	await get_tree().process_frame
+
+	_check(
+		servers.size.x > 100.0 and servers.size.y > 100.0,
+		"and has a size rather than being an invisible 0 x 0",
+		"%.0f x %.0f" % [servers.size.x, servers.size.y]
+	)
+	_check(
+		servers.browser != null and servers.browser.count() > 0,
+		"with something on the list, so a first run is not an empty box",
+		"%d" % (servers.browser.count() if servers.browser != null else -1)
+	)
+
+	# [b]Filtering is local and always will be.[/b] A server that decided which of its own
+	# properties to report is a server that reports whatever gets it listed — so the
+	# filter lives on the model, and a screen that filtered its own rows would be a second
+	# filter that disagrees with the one favourites are pinned by.
+	_check(
+		servers.browser.filter != null,
+		"and a filter the client owns rather than one the server answers"
+	)
+
+	stack.pop()
+	servers.queue_free()
 
 	# --- Props tab -----------------------------------------------------------
 
@@ -1972,9 +2115,9 @@ func _test_vehicles() -> void:
 	var right := DotFpsCommand.new()
 	right.move = Vector2(1.0, 1.0)
 
-	var heading_before := -vehicle.node.global_basis.z
+	var heading_before := -(vehicle.node as Node3D).global_basis.z
 	await _drive(&"bot", right, 160)
-	var heading_after := -vehicle.node.global_basis.z
+	var heading_after := -(vehicle.node as Node3D).global_basis.z
 
 	# Positive Y in a cross product of before × after means the turn was to the LEFT in
 	# Godot's left-handed-looking convention, so a right turn is negative.
@@ -2011,7 +2154,7 @@ func _test_vehicles() -> void:
 	# measured. Not tidiness: everything up to here has been steering it, and a test that
 	# measures a speed at the end of a drive it did not control is a test that measures
 	# whatever it happened to hit.
-	vehicle.node.global_transform = Transform3D(Basis.IDENTITY, at)
+	(vehicle.node as Node3D).global_transform = Transform3D(Basis.IDENTITY, at)
 	vehicle.body().linear_velocity = Vector3.ZERO
 	vehicle.body().angular_velocity = Vector3.ZERO
 

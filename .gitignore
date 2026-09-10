@@ -16,6 +16,23 @@
 /addons/dot_net
 /addons/dot_npc
 /addons/dot_vehicle
+/addons/dot_achievements
+/addons/dot_combat
+/addons/dot_loadout
+/addons/dot_match
+/addons/dot_npc_ai
+/addons/dot_npc_ai_director
+/addons/dot_stats
+/addons/dot_vote
+/addons/dot_auth
+/addons/dot_browser
+/addons/dot_chat
+/addons/dot_cloud
+/addons/dot_moderation
+/addons/dot_platform
+/addons/dot_user
+/addons/dot_user_avatar
+/addons/dot_voice
 
 # Records and zone files written at runtime
 /user_data/

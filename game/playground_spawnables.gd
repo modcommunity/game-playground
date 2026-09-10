@@ -195,6 +195,32 @@ static func catalogue() -> DotPropCatalogue:
 			"6fae7a", 30.0, 2, {"speed": 2.5, "hop": 4.5, "turn_seconds": 1.2}],
 		[&"turret_spinner", "Spinner", "npc_spinner", Vector3(1.6, 0.5, 1.6),
 			"c9a227", 200.0, 3, {"rpm": 90.0, "shove": 9.0}],
+		# The same NPC as `npc_chaser`, with a **decision** instead of an `if`: dot-npc-ai's
+		# state machine and Quake III's characteristics table. Both are in the catalogue
+		# deliberately — the cheap one is for filling a room with and the expensive one is
+		# for the arena, and keeping both is the only honest way to say what the addon
+		# actually bought. `skill` is a per-NPC character rather than a server difficulty,
+		# which is dot-npc-ai's whole claim.
+		[&"npc_hunter", "Hunter", "npc_hunter", Vector3(0.9, 1.8, 0.9),
+			"c05a9a", 85.0, 6,
+			{
+				"speed": 5.4,
+				"skill": "normal",
+				"sight": 45.0,
+				"sight_angle": 140.0,
+				"hearing": 16.0,
+				"give_up_seconds": 3.0,
+			}],
+		[&"npc_hunter_hard", "Hunter (hard)", "npc_hunter", Vector3(0.9, 1.8, 0.9),
+			"e0483f", 85.0, 8,
+			{
+				"speed": 6.2,
+				"skill": "hard",
+				"sight": 55.0,
+				"sight_angle": 160.0,
+				"hearing": 20.0,
+				"give_up_seconds": 4.5,
+			}],
 	]
 
 	for row in entities:

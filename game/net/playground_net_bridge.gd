@@ -43,6 +43,14 @@ signal notice_received(player_id: int, text: String)
 ## A player got into or out of a vehicle. Client side; the HUD and the camera read it.
 signal seat_changed(player_id: int, seated: bool)
 
+## What the SERVER says a player is holding — the tool or the weapon, by id.
+##
+## [b]The server decides this, not the client that asked.[/b] A weapon is a purchase:
+## `_give_weapon` charges for it and only broadcasts once it is paid for, so a client
+## that armed itself the moment the button was pressed would be holding something it
+## had been refused. This is the answer, and the client corrects itself to it.
+signal weapon_changed(player_id: int, weapon_id: StringName)
+
 ## Somebody pressed Enter. Server side, and the only thing this bridge does with chat.
 ##
 ## [b]The bridge carries chat and decides nothing about it.[/b] Who may say what, on which
@@ -1031,7 +1039,11 @@ func _on_event(message: DotNetMessage) -> void:
 		PlaygroundEvents.Kind.PROP_GONE:
 			_apply_prop_gone(reader)
 		PlaygroundEvents.Kind.WEAPON:
-			pass
+			var held := PlaygroundEvents.read_weapon(reader)
+			if bool(held["ok"]):
+				weapon_changed.emit(
+					int(held["player_id"]), held["weapon_id"] as StringName
+				)
 		PlaygroundEvents.Kind.TIMER:
 			_apply_timer(reader)
 		PlaygroundEvents.Kind.FINISH:

@@ -68,6 +68,14 @@ func _run() -> void:
 		await _test_vehicle_over_the_wire()
 		await _test_timer()
 		await _test_lossy()
+		# Last of the tests that need a connected player, and that placement is the
+		# point. Both halves of this suite are nodes in ONE scene tree and therefore
+		# one physics space, so every test that advances the world moves the reading
+		# every test after it takes — the vehicle drive and the lossy-link distance
+		# are both velocities over a fixed number of steps. Measured: this test run
+		# before the vehicle one took its 1-in-5 flake to 3 failures out of 3, at the
+		# same -0.16 m/s. Nothing here spawns a body, so run last it moves nothing.
+		await _test_weapon_request()
 		await _test_leave()
 
 	_report()
@@ -818,6 +826,80 @@ func _test_tools() -> void:
 func _exchange_steps(count: int) -> void:
 	_exchange()
 	await _steps(count)
+
+
+## A weapon is a purchase, and the client has to ask for it.
+##
+## [b]This is the check that was missing, and the hole it left was money.[/b]
+## `PlaygroundClient._set_tool` told the server which TOOL it held and said nothing at
+## all about a weapon — so `_give_weapon`, the only thing that calls `charge_fn`, was
+## called by nobody. `pg_shop` prices every weapon at 350 credits and every one of them
+## was free on a networked server, with the props beside them correctly charged. Nothing
+## errors: a client that arms itself looks exactly like a client that was given one.
+##
+## The other half is the same bug pointing the other way — the server broadcast what
+## each player was holding and the client's reader was a bare `pass`.
+func _test_weapon_request() -> void:
+	_section("a weapon is asked for, paid for and announced")
+
+	# A price list that records rather than a real shop: what is being tested is that
+	# the charge is REACHED, and a shop here would test dot-economy's arithmetic twice.
+	var charged: Array[StringName] = []
+	var refuse := [false]
+	_server_bridge.charge_fn = func(_id: StringName, thing: StringName) -> DotResult:
+		charged.append(thing)
+		if bool(refuse[0]):
+			return DotResult.fail(DotError.CODE_STATE, "You cannot afford that.")
+		return DotResult.success(null)
+
+	var told: Array = []
+	_client_bridge.weapon_changed.connect(
+		func(pid: int, wid: StringName) -> void: told.append([pid, wid])
+	)
+
+	_client_bridge.ask_weapon(&"launcher")
+	_exchange()
+	await _steps(4)
+	_exchange()
+	await _steps(4)
+
+	_check(
+		charged.has(&"launcher"),
+		"the server charged for the weapon",
+		"charged: %s" % [charged]
+	)
+	_check(told.size() > 0, "and told the clients who is holding what")
+	if told.size() > 0:
+		_check(
+			StringName(told[-1][1]) == &"launcher",
+			"and it is the weapon that was asked for"
+		)
+
+	# A weapon nobody can afford is refused, and the refusal must not announce it: a
+	# client that armed itself and was refused would be holding what it was denied.
+	refuse[0] = true
+	var before := told.size()
+	_client_bridge.ask_weapon(&"remover")
+	_exchange()
+	await _steps(4)
+	_exchange()
+	await _steps(4)
+	_check(charged.has(&"remover"), "a second weapon is charged for too")
+	_check(
+		told.size() == before,
+		"and a refused purchase announces nothing",
+		"%d -> %d" % [before, told.size()]
+	)
+
+	# A weapon this build does not have is refused before the money is touched.
+	var paid := charged.size()
+	_client_bridge.ask_weapon(&"no_such_weapon_at_all")
+	_exchange()
+	await _steps(2)
+	_check(charged.size() == paid, "an unknown weapon id charges nothing")
+
+	refuse[0] = false
+	_server_bridge.charge_fn = Callable()
 
 
 func _test_prop_removal() -> void:

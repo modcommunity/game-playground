@@ -285,6 +285,7 @@ func _build_netcode() -> DotResult:
 
 	bridge.hello_received.connect(_on_hello)
 	bridge.roster_changed.connect(_on_roster_changed)
+	bridge.weapon_changed.connect(_on_weapon_changed)
 	# [b]dot-server's own `chat_received` is deliberately NOT connected.[/b] The server
 	# cancels that path and routes every line through [DotChatRouter] onto this game's own
 	# wire instead; connecting both would draw a line twice on a server running the old
@@ -876,8 +877,17 @@ func _set_tool(id: StringName) -> void:
 
 	# The server holds its own copy, because the server is what actuates a tool against
 	# somebody else's prop. A client saying which tool it holds is a request, not a fact.
-	if bridge != null and (id == TOOL_PHYS or id == TOOL_GRAV):
-		bridge.ask_tool(id)
+	#
+	# [b]A weapon is asked for too, and for a second reason.[/b] `pg_shop` prices every
+	# weapon, and `_give_weapon` is the only thing that charges for one — so a client
+	# that armed itself and told nobody got every weapon in the catalogue free, and
+	# nobody else was told what it was holding either. The request goes for a tool AND
+	# for a weapon; only the id differs.
+	if bridge != null:
+		if id == TOOL_PHYS or id == TOOL_GRAV:
+			bridge.ask_tool(id)
+		else:
+			bridge.ask_weapon(id)
 
 	if id != TOOL_PHYS and id != TOOL_GRAV:
 		# A weapon. Built from its definition, which loads its script by path — see
@@ -1107,6 +1117,52 @@ func _on_prop_chosen(prop_id: StringName) -> void:
 
 	_sync_hud()
 	_spawn()
+
+
+## What the server says we are holding, which is the only answer that counts.
+##
+## [b]A refused purchase has to take the weapon back.[/b] `_set_tool` arms locally so a
+## weapon switch is not a round trip, which is prediction — and prediction that is never
+## corrected is just a client disagreeing with the server. `pg_shop` refuses a weapon a
+## player cannot afford, and without this the player kept it: the notice said no and the
+## thing was in their hands.
+##
+## Somebody else's weapon is not applied here. This client draws no first-person weapon
+## for a remote player, so there is nothing to apply it to yet — but the id now arrives,
+## which is what a third-person model would need.
+func _on_weapon_changed(pid: int, weapon_id: StringName) -> void:
+	if bridge == null or pid != bridge.local_player_id:
+		return
+	if weapon_id == tool:
+		return
+
+	# Not _set_tool: that would ask the server again, and the server is what just spoke.
+	_apply_server_tool(weapon_id)
+
+
+## Adopt a tool without asking for it. The half of [method _set_tool] that is local.
+func _apply_server_tool(id: StringName) -> void:
+	_primary_up()
+	_secondary_up()
+
+	if weapon != null:
+		weapon.holster()
+		weapon = null
+
+	tool = id
+
+	if id != TOOL_PHYS and id != TOOL_GRAV:
+		var def := playground.weapon_def(id)
+		weapon = PlaygroundWeapons.make(def)
+
+		if weapon == null:
+			tool = TOOL_PHYS
+		else:
+			weapon.equip(playground, def)
+			weapon.wielder = player_id
+			weapon.armed = selected_prop
+
+	_sync_hud()
 
 
 func _on_weapon_chosen(weapon_id: StringName) -> void:

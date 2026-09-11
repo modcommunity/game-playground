@@ -568,11 +568,26 @@ foot is not the same lap.
   was found by running the suite twice, which is what this family's own notes say to do
   before blaming a change.
 
-And one that is a harness artefact rather than a bug, worth knowing before reading a
-failure here: **`headless_net`'s "it drives forwards" check is flaky.** Both games are
-plain nodes in one scene tree and therefore share one physics space, and the reading is
-whatever the two cars happened to be doing. It failed once at -0.16 m/s and passed twice
-straight after with nothing changed. Run it again before believing it.
+And one that reads as a harness artefact and is worse than that: **`headless_net` is
+ORDER-SENSITIVE, and calling it flaky is what made it expensive.** Both halves are plain
+nodes in one scene tree and therefore share one physics space, so the vehicle test's "it
+drives forwards" reads a velocity that depends on where both cars are — and the lossy
+test's distance is the same kind of reading. One new test that spawns no body, asserts
+nothing about physics, and merely advances the world about twenty steps, moved three
+times, five runs each:
+
+| where the new test sits | clean runs | what failed |
+| --- | --- | --- |
+| not there at all | 4 / 5 | the vehicle drive, at -0.16 m/s |
+| before the vehicle test | **0 / 3** | the vehicle drive, at -0.16 m/s, every time |
+| between the vehicle and the timer | 3 / 5 | the lossy link's distance |
+| after everything that reads physics | **5 / 5** | — |
+
+So: **add a test here at the END of the connected-player sequence**, and treat a vehicle
+or lossy failure after inserting one as a schedule change rather than a code change until
+proved otherwise. The old advice in this slot was "run it again before believing it",
+which is precisely the advice that hides a real regression — the second run is the one
+that gets believed.
 
 ## The tick rate comes from `server.cfg`, and every link in the chain is silent
 
@@ -1001,7 +1016,34 @@ It shares the `pg_waves` cvar rather than having its own, because being killed b
 what being downed is *for*: a separate switch is an operator who turned the waves on and
 wonders why nobody is being picked up.
 
-### The bug the suite found
+### The bugs the suite found
+
+**A weapon was never asked for, so nobody ever paid for one.** `PlaygroundShop.catalogue()`
+prices every weapon at 350 credits, and `PlaygroundNetBridge._give_weapon` — the only thing
+in this game that calls `charge_fn` for one — was called by nobody. `PlaygroundClient._set_tool`
+sent `ask_tool` for the physics gun and the gravity gun and said **nothing at all** for a
+weapon: it loaded the script, armed it, and told the server none of it. So on a networked
+`pg_shop` server every weapon in the catalogue was free while the props beside them were
+correctly charged, and nobody else was told what anybody was holding either.
+
+Nothing errors, for the reason this file keeps writing down: **a client that arms itself
+looks exactly like a client that was given one.** The one visible difference is a number
+that did not go down, and nobody watches a credit balance for the thing that did not
+happen.
+
+The other half is the same bug pointing the other way. The server *does* broadcast what
+each player is holding — `_select_tool` has sent `Kind.WEAPON` since it was written — and
+the client's reader for it was a bare `pass`. `PlaygroundEvents.write_weapon` had a
+`read_weapon` beside it that nothing called, which is the mechanical detector this family
+uses for exactly this: **an encoder and a decoder that have never met.** `Kind.HELD` still
+has that shape and is listed under "not here" below.
+
+Arming stays local, because a weapon switch that waited a round trip is a weapon switch
+that feels broken — but it is *prediction* now rather than a decision, and
+`weapon_changed` is the correction: a purchase the shop refuses takes the weapon back
+out of the player's hands instead of leaving them holding what the notice just denied
+them.
+
 
 **Two unknown players are zero metres apart.** `PlaygroundDowns._position_of` answers with a
 sentinel far away for somebody it does not know — which is right — but *two* unknown ids
@@ -1012,6 +1054,18 @@ players. It is this family's usual shape: a guard that is correct for one argume
 wrong for two.
 
 ## Things deliberately not here
+
+- **`Kind.HELD`, and the three `ask_*` with no caller.** `PlaygroundEvents.write_held` /
+  `read_held` are a complete encoder and decoder for "who is carrying which prop, and is
+  it frozen" that **nothing sends and nothing handles** — so a client draws its own held
+  prop and sees nobody else's on the end of their gun. `ask_restart`, `ask_checkpoint`
+  and `publish_loadout` are the same shape one level up: the bridge has them, the server
+  handles them, and no key or menu reaches any of the three, so a networked client cannot
+  restart a run, use a practice checkpoint, or publish what it is carrying. These are
+  listed rather than fixed because each one is a decision about the client's bindings
+  rather than a missing line — but they are **not** deliberate omissions in the way the
+  rest of this list is, and the encoder/decoder pair is exactly the detector that caught
+  the weapon bug above.
 
 - **A vehicle a client predicts, and a smoothing pass in the renderer.** dot-vehicle's
   reasoning is that a rigid body is not reproducible across machines, so a predicted

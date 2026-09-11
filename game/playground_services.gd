@@ -286,7 +286,7 @@ func _build_relay() -> DotResult:
 
 	if backbone == null:
 		# **Found, not handed over.** A backbone client is built by whatever owns the
-		# server's credential — dot-server-setup-test's `TmcReport`, or this game's own
+		# server's credential — dot-server-deploy's `TmcReport`, or this game's own
 		# identity layer — and a relay built during module load exists before any host
 		# could assign one. `DotBackboneClient` publishes itself under this name for
 		# exactly that reason; the ordering trap is the one that left dot-server's audit

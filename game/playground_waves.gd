@@ -24,7 +24,7 @@ const CHANNEL := "playground.waves"
 ## The body a wave NPC is.
 ##
 ## [b]`playground_`-prefixed, and that is a deployment constraint rather than a style.[/b]
-## dot-server-setup-test flattens every built-in game into one `game/` directory — a
+## dot-server-deploy flattens every built-in game into one `game/` directory — a
 ## `.tscn` names its scripts by absolute `res://` path and there is no relative form — so
 ## an unprefixed name is one another game can silently overwrite. `entity.tscn`,
 ## `prop.tscn` and `vehicle.tscn` predate that rule and are the reason it exists: the lobby

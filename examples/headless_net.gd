@@ -28,6 +28,8 @@ const SNAPSHOT_RATE := 32
 ## What a host project that never set one runs at — the browser shell's rate.
 const CLIENT_ENGINE_TICK_RATE := 60
 
+const CHECKS := 115
+
 var _passed := 0
 var _failed := 0
 var _failures := PackedStringArray()
@@ -86,6 +88,15 @@ func _report() -> void:
 	print("%d passed, %d failed" % [_passed, _failed])
 	for line in _failures:
 		print("  " + line)
+	# The total the section counter cannot be. A runtime error inside a section aborts
+	# that function, and the counter is satisfied because the section had already
+	# announced itself. See docs/testing.md.
+	if _passed + _failed != CHECKS:
+		print("ERROR: %d checks ran, %d expected. A section aborted part-way." % [
+			_passed + _failed, CHECKS
+		])
+		get_tree().quit(1)
+		return
 	get_tree().quit(1 if _failed > 0 else 0)
 
 

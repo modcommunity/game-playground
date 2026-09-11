@@ -38,6 +38,8 @@ const TOWER_TAKE_OFF := 2.6
 ## project is the thing dot-map exists to avoid.
 const PgLobby := preload("res://maps/pg_lobby.gd")
 
+const CHECKS := 276
+
 var _passed := 0
 var _failed := 0
 var _failures := PackedStringArray()
@@ -96,6 +98,15 @@ func _run() -> void:
 	for line in _failures:
 		print("  FAIL  %s" % line)
 
+	# The total the section counter cannot be. A runtime error inside a section aborts
+	# that function, and the counter is satisfied because the section had already
+	# announced itself. See docs/testing.md.
+	if _passed + _failed != CHECKS:
+		print("ERROR: %d checks ran, %d expected. A section aborted part-way." % [
+			_passed + _failed, CHECKS
+		])
+		get_tree().quit(1)
+		return
 	get_tree().quit(1 if _failed > 0 else 0)
 
 

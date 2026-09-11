@@ -40,6 +40,23 @@ signal command_entered(peer_id: int, command: String, args: PackedStringArray)
 var chat: DotChatRouter = null
 var moderation: DotModerationManager = null
 var voice: DotVoiceRouter = null
+## The website chat relay, when one is configured. See [method _build_relay].
+var relay: DotChatRelay = null
+
+## The relay's configuration. Left null, a default is built and the relay stays OFF.
+##
+## Off by default for the same reason every other power in this family is: a relay
+## carries what your players type to a web page and back, and that is an operator's
+## decision rather than a consequence of installing an addon.
+@export var relay_config: DotChatRelayConfig = null
+
+## The backbone client the relay posts through, assigned by the host BEFORE setup.
+##
+## [b]An [Object], not a [DotBackboneClient].[/b] The relay holds it duck-typed so that
+## dot-chat need not depend on dot-auth, and keeping one spelling across the seam means
+## the duck-typed contract is the only contract.
+var backbone: Object = null
+
 
 var bridge: PlaygroundNetBridge = null
 var game: Playground = null
@@ -73,6 +90,11 @@ func setup() -> DotResult:
 
 	if not talking.ok:
 		return talking
+
+	# After chat, because it needs the router; not fatal, because a relay that cannot
+	# start is a server that still runs a perfectly good match.
+	var relayed := _build_relay()
+	DotLog.result(CHANNEL, "the website chat relay", relayed)
 
 	return _build_voice()
 
@@ -240,6 +262,89 @@ func _send_chat(wire: Dictionary, recipients: PackedInt32Array) -> void:
 
 	for peer_id in recipients:
 		bridge.send_chat(int(peer_id), addressed)
+
+
+
+# --- The website relay -----------------------------------------------------
+
+## Joins this server's chat to its room on the website.
+##
+## [b]Every seam points at something that already existed.[/b] The backbone client is
+## dot-auth's. The permission answer is dot-server's admin manager, through
+## `uid_has_permission` — the method written for exactly this, deciding what somebody may
+## do when they are not connected. The command runner is `DotServer.run_command_as_uid`,
+## which builds a context with that uid's OWN flags rather than RCON's root.
+##
+## Nothing here is a new policy. A relayed command is checked against the same file, by
+## the same flags, as the same person typing it in game.
+func _build_relay() -> DotResult:
+	if relay_config == null:
+		relay_config = DotChatRelayConfig.new()
+
+	if not relay_config.enabled:
+		return DotResult.success(null)
+
+	if backbone == null:
+		# **Found, not handed over.** A backbone client is built by whatever owns the
+		# server's credential — dot-server-setup-test's `TmcReport`, or this game's own
+		# identity layer — and a relay built during module load exists before any host
+		# could assign one. `DotBackboneClient` publishes itself under this name for
+		# exactly that reason; the ordering trap is the one that left dot-server's audit
+		# log unopened in every default configuration.
+		backbone = DotRegistry.get_service(&"dot_backbone_client")
+
+	if backbone == null:
+		return DotResult.fail(
+			DotError.CODE_STATE,
+			"The chat relay is on but no backbone client was handed to services."
+		)
+
+	relay = DotChatRelay.new()
+	relay.name = "ChatRelay"
+	relay.router = chat
+	relay.config = relay_config
+	relay.client = backbone
+	relay.permission_fn = _uid_has_permission
+	relay.command_fn = _run_relayed_command
+
+	add_child(relay)
+
+	var started := relay.start()
+
+	if not started.ok:
+		remove_child(relay)
+		relay.queue_free()
+		relay = null
+		return started
+
+	relay.site_command.connect(_on_site_command)
+
+	return DotResult.success(relay)
+
+
+func _uid_has_permission(uid: String, flag: String) -> bool:
+	if server == null or server.admins == null:
+		return false
+	return server.admins.uid_has_permission(uid, flag)
+
+
+func _run_relayed_command(
+	uid: String, command: String, args: PackedStringArray, source: int
+) -> void:
+	if server == null:
+		return
+
+	for reply in server.run_command_as_uid(uid, command, args, source):
+		DotLog.info(CHANNEL, "relayed command reply", {"uid": uid, "line": reply})
+
+
+func _on_site_command(uid: String, command: String, allowed: bool) -> void:
+	# Audited either way. A refusal is the half worth having a record of: it is somebody
+	# trying to drive the server from a web page without the rights to.
+	if server != null and server.audit != null:
+		server.audit.record(
+			"relay_command", "web:%s" % uid, command, {"allowed": allowed}
+		)
 
 
 # --- Voice -----------------------------------------------------------------

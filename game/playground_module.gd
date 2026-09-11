@@ -116,28 +116,28 @@ func _module_load() -> DotResult:
 	add_command(
 		"pg_timer", _cmd_timer,
 		"Show a player's run, or your own", ""
-	)
+	).with_chat()
 	add_command(
 		"pg_restart", _cmd_restart,
 		"Put yourself back at the map's spawn and abandon the run", ""
-	)
+	).with_chat()
 	add_command(
 		"pg_style", _cmd_style,
 		"List the styles, or switch to one", ""
-	)
+	).with_chat()
 	add_command(
 		"pg_track", _cmd_track,
 		"Switch track: main, or bonus <n>", ""
-	)
+	).with_chat()
 	add_command(
 		"pg_top", _cmd_top,
 		"The fastest times on this map, track and style", ""
-	)
+	).with_chat()
 
 	# --- Practice ----------------------------------------------------------
-	add_command("pg_cp", _cmd_checkpoint, "Save a practice checkpoint", "")
-	add_command("pg_tp", _cmd_teleport, "Go back to a practice checkpoint", "")
-	add_command("pg_cp_clear", _cmd_checkpoint_clear, "Forget them all", "")
+	add_command("pg_cp", _cmd_checkpoint, "Save a practice checkpoint", "").with_chat()
+	add_command("pg_tp", _cmd_teleport, "Go back to a practice checkpoint", "").with_chat()
+	add_command("pg_cp_clear", _cmd_checkpoint_clear, "Forget them all", "").with_chat()
 
 	# --- Zones, the sm_zones workflow --------------------------------------
 	#
@@ -171,28 +171,40 @@ func _module_load() -> DotResult:
 		DotAdminFlags.CHANGEMAP
 	)
 
+	# **`.with_chat()` is what lets a player type any of these.**
+	# `DotConCommand.chat_allowed` defaults to FALSE and `DotConsole._run_command`
+	# refuses a `Source.CHAT` context without it — and dot-server's chat manager, which
+	# is what actually handles a `!command`, dispatches with exactly that source.
+	#
+	# So this module registered thirty-two commands and not one could be reached from
+	# chat: `!pg_rtv`, on a server whose whole point is rocking the vote, answered
+	# "'pg_rtv' cannot be run from chat."
+	#
+	# Marked here are the player-facing ones and the two map ones. The ZONE commands
+	# stay console-only deliberately — drawing a start line is editing the map's rules,
+	# and somebody who can do it can invalidate every record on the map.
 	# --- Maps --------------------------------------------------------------
 	add_command(
 		"pg_map", _cmd_map, "Change map, or list what there is",
 		DotAdminFlags.CHANGEMAP
-	)
-	add_command("pg_nextmap", _cmd_nextmap, "What plays next, and how long is left", "")
-	add_command("pg_rtv", _cmd_rtv, "Rock the vote", "")
+	).with_chat()
+	add_command("pg_nextmap", _cmd_nextmap, "What plays next, and how long is left", "").with_chat()
+	add_command("pg_rtv", _cmd_rtv, "Rock the vote", "").with_chat()
 	add_command(
 		"pg_extend", _cmd_extend, "Extend the current map",
 		DotAdminFlags.CHANGEMAP
-	)
+	).with_chat()
 
 	# --- Props -------------------------------------------------------------
-	add_command("pg_prop", _cmd_prop, "Spawn a prop in front of you", "")
-	add_command("pg_undo", _cmd_undo, "Remove the last prop you spawned", "")
+	add_command("pg_prop", _cmd_prop, "Spawn a prop in front of you", "").with_chat()
+	add_command("pg_undo", _cmd_undo, "Remove the last prop you spawned", "").with_chat()
 	add_command(
 		"pg_props_clear", _cmd_props_clear,
 		"Remove every prop, or one player's",
 		DotAdminFlags.GENERIC
-	)
+	).with_chat()
 
-	add_command("pg_status", _cmd_status, "What this server is doing", "")
+	add_command("pg_status", _cmd_status, "What this server is doing", "").with_chat()
 
 	# --- The addons an operator turns on -----------------------------------
 	add_command(
@@ -214,7 +226,7 @@ func _module_load() -> DotResult:
 	add_command(
 		"pg_spec", _cmd_spec,
 		"pg_spec [player|off|next] — watch somebody else", ""
-	)
+	).with_chat()
 	add_command(
 		"pg_shop", _cmd_shop,
 		"pg_shop [on|off|prices] — a price list over the spawn menu",
@@ -232,15 +244,15 @@ func _module_load() -> DotResult:
 	add_command(
 		"pg_achievements", _cmd_achievements,
 		"pg_achievements [player] — what somebody has earned", ""
-	)
+	).with_chat()
 	# MUTE rather than BAN: quieting somebody and removing them are different powers, and
 	# dot-server's own flags are what distinguish them.
 	add_command(
 		"pg_gag", _cmd_gag, "pg_gag <who> <seconds> [reason]", DotAdminFlags.MUTE
-	)
+	).with_chat()
 	add_command(
 		"pg_mute", _cmd_mute, "pg_mute <who> <seconds> [reason]", DotAdminFlags.MUTE
-	)
+	).with_chat()
 
 	# The tick rate is dot-server's `sv_tickrate` and is deliberately not duplicated
 	# here. A second cvar for the same number is a second number that can disagree

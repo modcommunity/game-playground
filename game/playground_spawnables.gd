@@ -196,7 +196,7 @@ static func catalogue() -> DotPropCatalogue:
 		[&"turret_spinner", "Spinner", "npc_spinner", Vector3(1.6, 0.5, 1.6),
 			"c9a227", 200.0, 3, {"rpm": 90.0, "shove": 9.0}],
 		# The same NPC as `npc_chaser`, with a **decision** instead of an `if`: dot-npc-ai's
-		# state machine and Quake III's characteristics table. Both are in the catalogue
+		# state machine and the arena shooters' characteristics table. Both are in the catalogue
 		# deliberately — the cheap one is for filling a room with and the expensive one is
 		# for the arena, and keeping both is the only honest way to say what the addon
 		# actually bought. `skill` is a per-NPC character rather than a server difficulty,

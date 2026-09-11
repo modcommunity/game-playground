@@ -19,6 +19,14 @@ extends Node
 
 const CHANNEL := "playground.services"
 
+## Where the chat relay reads its own settings from, when the host assigned none.
+##
+## `user://` rather than `res://`: it is an operator's file on a running server, and an
+## exported build cannot be written to. Absent is the normal case and costs nothing -- the
+## file layer is skipped and the environment and command line still apply, which is how a
+## container turns the relay on without a file at all.
+const RELAY_CONFIG_PATH := "user://chat_relay.json"
+
 const CHANNEL_ALL := &"all"
 const CHANNEL_NEAR := &"near"
 const CHANNEL_ADMIN := &"admin"
@@ -281,6 +289,24 @@ func _build_relay() -> DotResult:
 	if relay_config == null:
 		relay_config = DotChatRelayConfig.new()
 
+		# LAYERED, and it was not. A `DotConfig` is exported defaults, then a JSON file,
+		# then the environment, then the command line -- and a config that is merely `new()`d
+		# has only the first of those, so `DOT_CHAT_RELAY_ENABLED=1` and
+		# `--chat-relay-enabled` both did nothing. The relay could be turned on only by a
+		# host that assigned a config object, and no host in this family assigns one: the
+		# whole addon was unreachable from every documented route, in all five games, with
+		# nothing erroring, because a disabled relay is a legitimate configuration.
+		#
+		# Only on the config this builds. A config the host handed over is the host's, and
+		# re-layering it here would overwrite a deliberate choice with an environment
+		# variable somebody set for a different server.
+		var layered := relay_config.load_layered(RELAY_CONFIG_PATH)
+		if not layered.ok:
+			DotLog.warn(CHANNEL, "the chat relay configuration is not usable", {
+				"why": str(layered.error),
+			})
+			return DotResult.success(null)
+
 	if not relay_config.enabled:
 		return DotResult.success(null)
 
@@ -294,10 +320,19 @@ func _build_relay() -> DotResult:
 		backbone = DotRegistry.get_service(&"dot_backbone_client")
 
 	if backbone == null:
-		return DotResult.fail(
-			DotError.CODE_STATE,
-			"The chat relay is on but no backbone client was handed to services."
+		# Info and success, not a failure, and the difference matters now that the relay
+		# can be turned on by an environment variable. A deployment that exports
+		# `DOT_CHAT_RELAY_ENABLED=1` for a whole fleet and holds a credential for only some
+		# of them is the ordinary case -- and a red line on every boot of the others is this
+		# family's own "a warning that reads like a setting nobody filled in", which is how
+		# a real one stops being read. The line names what to do, which is the only part an
+		# operator can act on.
+		DotLog.info(
+			CHANNEL,
+			"the chat relay is on but there is no backbone client, so it will not start",
+			{"fix": "put a server-scoped integration token in the listing configuration"}
 		)
+		return DotResult.success(null)
 
 	relay = DotChatRelay.new()
 	relay.name = "ChatRelay"
@@ -306,6 +341,7 @@ func _build_relay() -> DotResult:
 	relay.client = backbone
 	relay.permission_fn = _uid_has_permission
 	relay.command_fn = _run_relayed_command
+	relay.commands_fn = _relay_command_document
 
 	add_child(relay)
 
@@ -493,3 +529,20 @@ func describe_lines() -> PackedStringArray:
 		))
 
 	return out
+
+
+## What this server accepts, for the site's `/` menu.
+##
+## Built at the relay's OWN source rather than at "chat", because the two answer different
+## questions: a relay configured as RCON reaches everything RCON reaches, and a menu built
+## from `chat_allowed` alone would hide an operator's whole toolbox from a deployment that
+## deliberately made their site admins remote administrators -- or, the other way round,
+## offer a records server's map change to somebody whose every attempt is refused.
+##
+## A method rather than a lambda because the relay re-reads it on every publish: the table
+## changes when a module loads, and a callable that closed over a list would publish the
+## table as it was at boot, for ever.
+func _relay_command_document() -> Array[Dictionary]:
+	if server == null or server.console == null:
+		return []
+	return server.console.command_document(relay_config.command_source as DotCmdContext.Source)

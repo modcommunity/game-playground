@@ -152,7 +152,8 @@ func _build_director() -> DotResult:
 	rules.spawn_ahead = 0.0
 	# [b]On, and this is the setting a sandbox actually wants.[/b] Something appearing in
 	# front of you is a jump scare; something appearing behind a pillar and walking round
-	# it is an encounter. dot-npc took Source's hiding spots for the same reason.
+	# it is an encounter. dot-npc took its hiding spots from that practice for the same
+	# reason.
 	rules.spawn_out_of_sight = true
 	rules.behind_fraction = 0.25
 	rules.peak_per_player = 8.0

@@ -5,7 +5,7 @@ extends Node3D
 ## ranked, with props you can spawn and a physics gun to move them with.
 ##
 ## [b]This is the only place every addon in the movement half of the family runs
-## together[/b] — dot-fps-controller, dot-timer, dot-map, dot-props and
+## together[/b] — dot-player-controller, dot-timer, dot-map, dot-props and
 ## dot-leaderboard, over dot-core — and, by the family's own repeated lesson, the
 ## seams between them are where the bugs are. Each addon's own suite runs it with the
 ## others absent; `examples/headless_playground.tscn` is the only thing that runs the
@@ -145,6 +145,14 @@ var weapons: Array[PlaygroundWeaponDef] = []
 ## The node loaded maps and spawned props are put under.
 var world: Node3D = null
 
+## Who is in the session, which side, what class, where they start, and the physics.
+##
+## [b]Built last and binds to everything else.[/b] It adds no authority: the props are
+## still the spawner's and the course is still dot-timer's. What it does is keep one set
+## of records in step, so a scoreboard, a spectator seat and a start selector read the
+## same thing. See [PlaygroundPlayerStack].
+var player_stack: PlaygroundPlayerStack = null
+
 ## The players in this instance, by id.
 var players: Dictionary = {}
 
@@ -201,6 +209,7 @@ func _ready() -> void:
 	_build_vehicles()
 	_build_npc_senses()
 	_build_maps()
+	_build_player_stack()
 
 	# Physics ticks drive everything. Not _process: a timer sampled per frame counts
 	# a different number of ticks on a 144 Hz monitor than on a 60 Hz one, and the
@@ -213,6 +222,28 @@ func _ready() -> void:
 
 	booted = true
 	ready_for_players.emit()
+
+
+## Stands up the player-facing addons and binds them to this game.
+##
+## After the maps, because it reads the start points the map session loads — and a
+## stack built before them binds to nothing and reports success.
+func _build_player_stack() -> void:
+	player_stack = PlaygroundPlayerStack.new()
+	player_stack.name = "PlayerStack"
+	# A client mirrors the server's physics; re-applying a sandbox profile there would
+	# have its props settle on a different schedule from the server's, which in a
+	# server-authoritative sandbox is visible as props that snap.
+	player_stack.apply_physics = authoritative
+	add_child(player_stack)
+
+	var res := player_stack.setup(self)
+
+	if not res.ok:
+		DotLog.warn(CHANNEL, "the player stack is off", {"why": res.error.message})
+		remove_child(player_stack)
+		player_stack.queue_free()
+		player_stack = null
 
 
 ## The rate everything counts in.
@@ -336,6 +367,9 @@ func _simulate_tick(step: float) -> void:
 func tick_once(tick: int) -> void:
 	_tick = tick
 	_simulate_tick(1.0 / float(maxi(tick_rate, 1)))
+
+	if player_stack != null:
+		player_stack.tick(tick)
 
 
 ## The timer half of a tick, and nothing else.
@@ -852,6 +886,11 @@ static func map_catalogue() -> DotMapCatalogue:
 		[&"pg_lobby", "Playground", DotMapDef.KIND_SANDBOX, 1],
 		[&"pg_surf_intro", "Surf: Introduction", DotMapDef.KIND_SURF, 2],
 		[&"pg_bhop_intro", "Bhop: Introduction", DotMapDef.KIND_BHOP, 3],
+		# The one map in this family that is not written down. A sandbox's content is
+		# what the players build in it, so "somewhere new" is worth more here than
+		# "somewhere good" -- which is not true of the three above, and is why this is
+		# the only one.
+		[&"pg_generated", "Playground: Generated", DotMapDef.KIND_SANDBOX, 1],
 	]
 
 	for row in table:
@@ -1072,6 +1111,29 @@ func change_map(id: StringName) -> DotResult:
 	return await maps.change_to(id)
 
 
+## The seed a generated map is built from.
+##
+## [b]Zero means "pick one and announce it", which is the only honest default.[/b] A
+## generated world nobody can name the seed of is a world nobody can share, and "play the
+## map I played" is the single most-requested feature every one of them gets. `pg_seed`
+## is the cvar, and the seed that was actually used is logged whichever way it came.
+##
+## Taken from dot-randomness when a game has one, so a generated map and every other
+## random thing in the session come out of one seed rather than two.
+func map_seed() -> int:
+	if config != null and config.map_seed != 0:
+		return config.map_seed
+
+	var rng: Object = DotRegistry.get_service(&"dot_random_source")
+	if rng != null and rng.has_method("seed_for"):
+		return int(rng.call("seed_for", &"map"))
+
+	# Nothing configured and no randomness manager: a fixed seed rather than a random
+	# one, because a sandbox that is a different shape on every boot and cannot say why
+	# is worse than one that is always the same.
+	return 1
+
+
 func _on_map_changing(_from: DotMapDef, _to: DotMapDef) -> void:
 	# Announced before anything is torn down, which is the whole point of the signal:
 	# every run in progress is on geometry that is about to stop existing, and every
@@ -1093,6 +1155,17 @@ func _on_map_changing(_from: DotMapDef, _to: DotMapDef) -> void:
 
 func _on_map_changed(map: DotMapDef, loaded: Node) -> void:
 	var playground_map := loaded as PlaygroundMap
+
+	# A map that has to be told something before it can build itself. Duck-typed rather
+	# than type-checked, so a delivered map with the same shape works and this file names
+	# nothing from `maps/`.
+	#
+	# [b]Before the spawns below, and that ordering is the whole reason it is here.[/b]
+	# A generated map's spawn point comes out of the generator, so spawning a player
+	# before it has run puts them at the fallback -- which on a generated map is a guess,
+	# and a guess inside a wall is a player who cannot move.
+	if loaded != null and loaded.has_method("configure"):
+		loaded.call("configure", map_seed(), DotRegistry.get_service(&"dot_random_source"))
 
 	# A map that carries its own zones hands them over; one that ships a JSON file
 	# has already had it read by dot-map, into `maps.zones_json`. Both routes end

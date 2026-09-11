@@ -12,7 +12,7 @@ This project, along with every asset it is built on, was built initially with **
 I intend on reviewing code, testing, and editing documentation regularly. If you're interested in helping out, please let me know!
 
 ## A Sandbox, and Where the Movement Half Meets
-**A Godot 4 sandbox in the classic physics-sandbox shape** — hold Q, pick a prop, an NPC or a weapon, click it and it is yours; pick props up with a physics gun, freeze them, throw them, undo them. Plus map support, and a timer that is not only for surf and bunny-hop maps.
+**A Godot 4 sandbox in the classic physics-sandbox shape.** Hold Q, pick a prop, an NPC or a weapon, click it and it is yours; pick props up with a physics gun, freeze them, throw them, undo them. Plus map support, and a timer that is not only for surf and bunny-hop maps.
 
 It is two things at once: a game you can play, and the only place the movement half of the `dot-*` family runs together.
 
@@ -20,7 +20,7 @@ It is two things at once: a game you can play, and the only place the movement h
 
 | | |
 | --- | --- |
-| [dot-fps-controller](https://github.com/modcommunity/dot-fps-controller) | Classic strafe movement: air-strafing, surf, bunny-hopping, styles |
+| [dot-player-controller](https://github.com/modcommunity/dot-player-controller) | Classic strafe movement: air-strafing, surf, bunny-hopping, styles |
 | [dot-timer](https://github.com/modcommunity/dot-timer) | Zones, tracks, stages, styles, records, replays |
 | [dot-map](https://github.com/modcommunity/dot-map) | Three maps in one game, with a rotation |
 | [dot-props](https://github.com/modcommunity/dot-props) | Spawnable props, a physics gun, a gravity gun |
@@ -37,48 +37,48 @@ godot --path .
 | | |
 | --- | --- |
 | **Q** | The spawn menu. **Hold** it to browse and release to close; **tap** it to pin it open |
-| **Mouse 1** | The tool's primary — grab and hold with the physics gun, punt with the gravity gun |
-| **Mouse 2** | The tool's secondary — freeze what is held, or pull and carry |
+| **Mouse 1** | The tool's primary: grab and hold with the physics gun, punt with the gravity gun |
+| **Mouse 2** | The tool's secondary: freeze what is held, or pull and carry |
 | **Wheel** | How far out the physics gun holds a prop |
 | **Shift + mouse** | Turn the prop the physics gun is holding |
 | **1** / **2** / **3** | Physics gun / gravity gun / cycle the weapons you have |
 | **E** | Spawn the prop the menu last armed, again |
 | **R** | Unfreeze everything you have frozen |
 | **Z** | Undo your last spawn |
-| **WASD** | Move — including while the menu is open |
-| **Space** | Jump (hold it — auto-hop is on) |
+| **WASD** | Move, including while the menu is open |
+| **Space** | Jump (hold it; auto-hop is on) |
 | **Ctrl** | Crouch |
 | **T** | Switch track: the sandbox, or the course in the corner of it |
-| **Tab** | Cycle style — normal, sideways, half-sideways, backwards, low gravity, prebhop |
+| **Tab** | Cycle style: normal, sideways, half-sideways, backwards, low gravity, prebhop |
 | **M** | Next map |
 | **C** / **V** | Save a practice checkpoint / go back to one |
 | **X** / **B** | Cycle which checkpoint / forget them all |
 | **Esc** | Close the menu, or release the mouse |
 
-**Clicking a prop in the menu spawns it**, rather than arming a separate spawn key — and the menu stays open, so a wall is nine clicks rather than nine open-and-closes. Three tabs, `/` to search, and icons drawn from each definition because this project ships no art:
+**Clicking a prop in the menu spawns it**, rather than arming a separate spawn key, and the menu stays open, so a wall is nine clicks rather than nine open-and-closes. Three tabs, `/` to search, and icons drawn from each definition because this project ships no art:
 
 | Tab | |
 | --- | --- |
 | **Props** | Fourteen, in three categories. Planks, panels, beams and pillars to build with; crates and barrels; balls from a 2 kg beach ball to a 900 kg boulder |
-| **Entities** | Four NPCs with scripts — one wanders, one chases you, one hops, one spins and shoves whatever comes near. They are props too, so you can pick one up with the physics gun and punt it |
+| **Entities** | Four NPCs with scripts: one wanders, one chases you, one hops, one spins and shoves whatever comes near. They are props too, so you can pick one up with the physics gun and punt it |
 | **Weapons** | A launcher that fires whatever you have armed, a remover, and an impulse gun that shoves everything nearby |
 
-Entities and weapons are **scripts named by path in the catalogue**, which is what lets a downloaded content pack ship its own — a mounted `.pck` cannot use `class_name`. See [`CLAUDE.md`](CLAUDE.md).
+Entities and weapons are **scripts named by path in the catalogue**, which is what lets a downloaded content pack ship its own, because a mounted `.pck` cannot use `class_name`. See [`CLAUDE.md`](CLAUDE.md).
 
-Saving a checkpoint is free. *Restoring* one costs you the run — the HUD says **PRACTICE** once it has, which is much better than finding out at the finish line.
+Saving a checkpoint is free. *Restoring* one costs you the run, and the HUD says **PRACTICE** once it has, which is much better than finding out at the finish line.
 
 ## The maps
 
-- **pg_lobby** — the sandbox. A 200-metre plate to build on, a staircase, a walkable ramp and one steep enough to learn to surf on — and, out in one corner, a nine- platform jump course with a start line, a split and a finish. The course is on **bonus 1** and the main track has no timer at all, so building is never timed and the minigame is one **T** away. It is also what says the timer is not a surf-and-bhop thing: nothing about a jump course is a movement genre.
-- **pg_surf_intro** — two ramps meeting in a valley. Drop in, hold a strafe, keep your speed to the bottom.
-- **pg_bhop_intro** — blocks with gaps that widen. The later ones need the speed you kept from the earlier ones.
+- **pg_lobby** is the sandbox. A 200-metre plate to build on, a staircase, a walkable ramp and one steep enough to learn to surf on, and out in one corner a nine-platform jump course with a start line, a split and a finish. The course is on **bonus 1** and the main track has no timer at all, so building is never timed and the minigame is one **T** away. It is also what says the timer is not a surf-and-bhop thing: nothing about a jump course is a movement genre.
+- **pg_surf_intro** is two ramps meeting in a valley. Drop in, hold a strafe, keep your speed to the bottom.
+- **pg_bhop_intro** is blocks with gaps that widen. The later ones need the speed you kept from the earlier ones.
 
 ## Setting up
 
 Every `dot-*` addon is its own repository. For local development, symlink them:
 
 ```bash
-for pair in dot_core:dot-core dot_fps_controller:dot-fps-controller \
+for pair in dot_core:dot-core dot_player_controller:dot-player-controller \
             dot_timer:dot-timer dot_map:dot-map dot_props:dot-props \
             dot_leaderboard:dot-leaderboard dot_ui:dot-ui dot_server:dot-server; do
   ln -s "../../${pair##*:}/addons/${pair%%:*}" "addons/${pair%%:*}"
@@ -101,7 +101,7 @@ hostname "surf | playground"
 pg_map_seconds 1800
 ```
 
-The tick rate is the server's, and it reaches the timer and every record filed — see [`CLAUDE.md`](CLAUDE.md). Once connected, an admin draws zones on a map whose author never used this engine the way they always have:
+The tick rate is the server's, and it reaches the timer and every record filed. See [`CLAUDE.md`](CLAUDE.md). Once connected, an admin draws zones on a map whose author never used this engine the way they always have:
 
 ```
 pg_zone start          // pick a kind

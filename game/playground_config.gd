@@ -27,6 +27,17 @@ extends DotConfig
 ## operator points this at a file and the built-in list is not used at all.
 @export var catalogue_path: String = ""
 
+## The seed a generated map is built from. Zero picks one and announces it.
+##
+## [b]A generated world nobody can name the seed of is a world nobody can share[/b], and
+## "play the map I played" is the single most-requested feature every generated game gets.
+## It is a setting rather than a debugging affordance for exactly that reason, and the
+## seed actually used is logged whichever way it arrived.
+##
+## Zero takes the seed from dot-randomness when the deployment has one, so a generated map
+## and everything else random in the session come out of one number rather than two.
+@export var map_seed: int = 0
+
 ## A prop catalogue JSON file. Empty uses the fourteen props this build ships.
 ##
 ## Loaded INSTEAD of the built-in list, not layered over it. A catalogue that merged

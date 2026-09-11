@@ -25,7 +25,8 @@ const CHANNEL := "playground.shop"
 
 ## What everybody starts with, and what the wave mode pays.
 ##
-## Deliberately not Counter-Strike's 800/16000. A sandbox's numbers are about how long
+## Deliberately not the round-based shooters' 800/16000. A sandbox's numbers are about
+## how long
 ## you wait for the next crate, not about a pistol round, and the ceiling is high because
 ## saving up for the expensive thing IS the mode.
 const START_CREDITS := 1200

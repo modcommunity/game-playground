@@ -65,4 +65,4 @@ renderer/rendering_method.mobile="gl_compatibility"
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/dot_server/plugin.cfg", "res://addons/dot_net/plugin.cfg", "res://addons/dot_fps_controller/plugin.cfg", "res://addons/dot_timer/plugin.cfg", "res://addons/dot_map/plugin.cfg", "res://addons/dot_props/plugin.cfg", "res://addons/dot_leaderboard/plugin.cfg", "res://addons/dot_npc/plugin.cfg", "res://addons/dot_vehicle/plugin.cfg")
+enabled=PackedStringArray("res://addons/dot_server/plugin.cfg", "res://addons/dot_net/plugin.cfg", "res://addons/dot_player_controller/plugin.cfg", "res://addons/dot_timer/plugin.cfg", "res://addons/dot_map/plugin.cfg", "res://addons/dot_props/plugin.cfg", "res://addons/dot_leaderboard/plugin.cfg", "res://addons/dot_npc/plugin.cfg", "res://addons/dot_vehicle/plugin.cfg", "res://addons/dot_physics/plugin.cfg", "res://addons/dot_spawn/plugin.cfg", "res://addons/dot_player/plugin.cfg", "res://addons/dot_player_char/plugin.cfg", "res://addons/dot_player_class/plugin.cfg", "res://addons/dot_team/plugin.cfg")

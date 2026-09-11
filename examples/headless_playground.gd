@@ -144,10 +144,19 @@ func _test_boots() -> void:
 	_check(playground.props != null, "the prop spawner exists")
 	_check(playground.boards != null, "the leaderboards exist")
 
+	# Four: the sandbox, two courses, and `pg_generated` -- the one map in this family
+	# that is not written down. The count is asserted rather than the ids because a map
+	# added and not registered is the failure this is here to catch, and a list of ids
+	# would be a second copy of `Playground.map_catalogue()`.
 	_check(
-		playground.maps.catalogue.size() == 3,
-		"three maps are in the catalogue",
+		playground.maps.catalogue.size() == 4,
+		"four maps are in the catalogue, one of them generated",
 		"%d" % playground.maps.catalogue.size()
+	)
+	_check(
+		playground.maps.catalogue.has(&"pg_generated"),
+		"including the generated one, which is a map def like any other -- a rotation, a "
+		+ "ballot and a cooldown work on it without anything opening the scene"
 	)
 	_check(
 		playground.maps.catalogue.problems().is_empty(),
@@ -357,7 +366,7 @@ func _test_surf_run() -> void:
 	)
 
 	# Now finish it deliberately, by putting the player in the finish zone. The
-	# route down is a movement question and is tested in dot-fps-controller; what is
+	# route down is a movement question and is tested in dot-player-controller; what is
 	# under test HERE is that a crossing produces a timed, filed run.
 	if finished.is_empty():
 		var zones := player.timer.zones
@@ -1076,7 +1085,7 @@ func _test_a_chaser_commits(playground: Playground) -> void:
 
 
 ## The same NPC with a **decision** instead of an `if`: dot-npc-ai's state machine and
-## Quake III's characteristics table.
+## the arena shooters' characteristics table.
 ##
 ## [b]`npc_chaser` is still in the catalogue and is still correct.[/b] What this one adds
 ## is a reaction time, a character per NPC, and a machine whose transitions are the design
@@ -1931,7 +1940,7 @@ func _walk_the_tower(player: PlaygroundPlayer) -> void:
 
 	# Run first, jump at the edge. NOT jump held down from the start.
 	#
-	# [b]Holding jump is how a bot gets nowhere in a Quake-style controller, and it is
+	# [b]Holding jump is how a bot gets nowhere in an arena-shooter controller, and it is
 	# worth writing down.[/b] The first version held it, and the bot hopped in place at
 	# exactly 1.00 m/s for six hundred ticks: air acceleration only rewards strafing, so
 	# a player who never touches the ground and only holds forward never accelerates.

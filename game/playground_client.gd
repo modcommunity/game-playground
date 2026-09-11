@@ -93,11 +93,26 @@ var match_label: String = ""
 var match_seconds: float = 0.0
 var camera: Camera3D = null
 
+## The player asked to leave from the pause menu.
+##
+## Announced rather than acted on: what "leave" means belongs to whatever loaded this
+## client -- a shell goes back to its own menu, an embedded page closes the frame, a
+## development scene quits. A client that called `get_tree().quit()` itself would be one
+## that cannot be embedded in anything.
+signal leave_requested()
+
 var screens: DotScreenStack = null
+
+## The escape menu, and the settings screen behind it. See [method _build_pause].
+var pause: DotPauseScreen = null
+var settings_screen: DotSettingsScreen = null
 var menu: PlaygroundSpawnMenu = null
 
 ## The server list, on the same stack as the spawn menu.
 var browser: PlaygroundBrowser = null
+
+## Settings, randomness, audio, effects and the console.
+var presentation: PlaygroundPresentation = null
 
 ## Somebody picked a server in the browser. What a launcher connects to.
 signal server_chosen(address: String)
@@ -158,6 +173,18 @@ func _ready() -> void:
 		config = PlaygroundConfig.new()
 	if link != null:
 		config.authoritative = false
+
+	# [b]Before the playground, and the ordering is what makes the generated map work.[/b]
+	# `Playground._ready` loads its first map inside `add_child`, and a generated map asks
+	# `DotRegistry` for a seed source at that moment. A randomness manager registered
+	# afterwards is one the map did not use -- and nothing would error, because falling
+	# back to a fixed seed is a legitimate configuration and therefore indistinguishable
+	# from the bug.
+	presentation = PlaygroundPresentation.new()
+	presentation.name = "Presentation"
+	presentation.client = self
+	add_child(presentation)
+	DotLog.result("playground.client", "the presentation layer", presentation.setup())
 
 	playground.config = config
 	playground.config_file = config_file
@@ -557,8 +584,90 @@ func _build_screens() -> void:
 		CHANNEL, "registering the server browser", screens.register(browser)
 	)
 
+	_build_pause()
+
+
+## The escape menu, which this client did not have.
+##
+## [b]It had a spawn menu and a server browser and no way to reach a setting.[/b] Escape
+## toggled the mouse capture and nothing else, so the only route to the volume was knowing
+## that a console existed and what to type into it -- which is not a route a player has.
+##
+## Both screens are dot-ui's rather than this game's own: four clients in this family had
+## written the same panel-title-buttons shape, and two copies of one thing is this tree's
+## most repeated mistake.
+func _build_pause() -> void:
+	pause = DotPauseScreen.new()
+	pause.name = "Pause"
+
+	var labels := PackedStringArray(["Resume", "Settings", "Servers", "Leave"])
+	var built := pause.build(labels)
+
+	if not built.ok:
+		DotLog.result(CHANNEL, "the pause menu", built)
+		pause.free()
+		pause = null
+		return
+
+	DotLog.result(CHANNEL, "registering the pause menu", screens.register(pause))
+	pause.chosen.connect(_on_pause_chosen)
+
+	var settings: DotSettingsManager = (
+		presentation.settings if presentation != null else null
+	)
+
+	if settings == null:
+		# Said out loud and greyed out rather than left to open an empty screen. A button
+		# that does nothing is worse than one that is visibly unavailable.
+		var button := pause.button(&"settings")
+		if button != null:
+			button.disabled = true
+		return
+
+	settings_screen = DotSettingsScreen.new()
+	settings_screen.name = "Settings"
+
+	var made := settings_screen.build(settings)
+
+	if not made.ok:
+		DotLog.result(CHANNEL, "the settings screen", made)
+		settings_screen.free()
+		settings_screen = null
+		return
+
+	DotLog.result(
+		CHANNEL, "registering the settings screen", screens.register(settings_screen)
+	)
+
+
+func _on_pause_chosen(id: StringName) -> void:
+	match id:
+		&"resume":
+			screens.pop(&"pause")
+		&"settings":
+			if settings_screen != null:
+				screens.push(&"settings")
+		&"servers":
+			screens.push(&"servers")
+		&"leave":
+			# Closed first, so a host with nowhere to send the player is not left showing
+			# a pause screen over a game that carried on behind it.
+			screens.pop(&"pause")
+			leave_requested.emit()
+
 
 func _process(_delta: float) -> void:
+	if presentation != null:
+		# Once a frame, with where the camera is. dot-audio culls by distance from the
+		# listener and dot-fx ages what it spawned, and neither ticks itself -- for the
+		# reason everything tickable in this family is explicit: `_process` does not run
+		# while a tree is paused, and a pause menu is exactly when nothing finishes.
+		var eye := camera.global_position if camera != null and camera.is_inside_tree() \
+			else Vector3.ZERO
+		var forward := -camera.global_transform.basis.z \
+			if camera != null and camera.is_inside_tree() else Vector3.FORWARD
+		presentation.present(_delta, eye, forward)
+
 	# [b]Once a frame, not once a tick.[/b] The interpolator blends two snapshots
 	# perfectly and is then useless if it is only ever asked at a tick boundary: remote
 	# players and every replicated prop would step at the snapshot rate however smoothly
@@ -655,6 +764,13 @@ func active_sampler() -> DotFpsSampler:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	# [b]The console first.[/b] This client reads bare letters -- Q opens the spawn menu,
+	# 1 and 2 switch tools, F gets into a car, E spawns -- so without this, typing
+	# `seed` at the console opens the menu, switches a tool and spawns a crate. It is the
+	# line every game that ships a console forgets.
+	if presentation != null and presentation.swallows_input():
+		return
+
 	# [b]Voice first, and before the player check.[/b] Somebody with no player yet — mid
 	# signon, or spectating — should still be able to talk, and a release swallowed by an
 	# early return is a microphone left open. `handle_event` sees both edges, which every
@@ -735,14 +851,21 @@ func _unhandled_input(event: InputEvent) -> void:
 			_clear_checkpoints()
 		KEY_ESCAPE:
 			# Only when no screen is up. The stack's own back handling pops the menu,
-			# and a second handler here would pop it and release the mouse in one
+			# and a second handler here would pop it and open the pause menu in one
 			# press.
+			#
+			# Release, THEN open -- the same two-step game-arena uses, and for the
+			# browser's sake rather than the desktop's: Escape is how a browser itself
+			# exits pointer lock and it then refuses to re-enter for about a second, so a
+			# press that both released and opened would leave the menu up with no way to
+			# get the mouse back.
 			if not _menu_is_open():
-				Input.mouse_mode = (
-					Input.MOUSE_MODE_VISIBLE
-					if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
-					else Input.MOUSE_MODE_CAPTURED
-				)
+				if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+					Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+				elif pause != null:
+					screens.push(&"pause")
+				else:
+					Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
 ## Q is the one key that still means something while the menu is open.

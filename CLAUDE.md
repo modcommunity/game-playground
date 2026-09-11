@@ -12,7 +12,7 @@ each addon's own `CLAUDE.md` before working in it. This file is only about the j
 
 ## What this project is for
 
-**It is the only place dot-fps-controller, dot-timer, dot-map, dot-props, dot-npc and
+**It is the only place dot-player-controller, dot-timer, dot-map, dot-props, dot-npc and
 dot-leaderboard run together**, and by the family's own repeated lesson that is where
 everything is found. Every one of those addons has a suite, every suite passes with
 the others absent, and that proves very little: the bugs that have cost days here were
@@ -484,7 +484,7 @@ A second route through a map players already know is worth more than a fifth map
 has learned, and the two courses are deliberately asking different questions. Bonus 1 is
 a straight line with widening gaps: **how far can you jump.** Bonus 2 is a spiral
 climbing a pillar, so every jump is a turning one: **can you keep your speed round a
-corner**, which in a Quake-style controller is air-strafing and is the thing the movement
+corner**, which in an arena-shooter controller is air-strafing and is the thing the movement
 is actually about.
 
 Three things about it that are not visible in any count, and one of them was a real bug:
@@ -857,9 +857,10 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
     godot --headless --path . --check-only --script "res://${f#./}"
 done
 godot --headless --path . --script tools/export_zones.gd
-godot --headless --path . res://examples/headless_playground.tscn   # 275 checks
-godot --headless --path . res://examples/headless_net.tscn          # 109 checks
-godot --headless --path . res://examples/dedicated.tscn             # 126 checks
+godot --headless --path . res://examples/headless_playground.tscn   # 276 checks
+godot --headless --path . res://examples/headless_presentation.tscn #  55 checks
+godot --headless --path . res://examples/headless_net.tscn          # 115 checks
+godot --headless --path . res://examples/dedicated.tscn             # 158 checks
 ```
 
 **Run the check-only pass first.** A script that fails to parse makes the scene fail
@@ -1002,7 +1003,7 @@ sandbox.
 **The wave mode is the only co-operative thing in this family, and this is what makes it
 one.** Until now a player killed by a wave respawned on a timer, so the other players
 carried on shooting and nothing about the wave was harder for having dropped somebody.
-Left 4 Dead's answer is the one every co-operative shooter since has copied: at zero health
+The co-operative survival shooters' answer is the one every game since has copied: at zero health
 you go **down**, you bleed out over ninety seconds, and picking you up costs somebody five
 seconds of not shooting.
 
@@ -1052,6 +1053,129 @@ who does not exist revived a casualty who did not exist, and the only symptom wa
 who should have bled out standing back up. `begin_revive` now refuses unless both are real
 players. It is this family's usual shape: a guard that is correct for one argument and
 wrong for two.
+
+## The eight addons this game gained at once
+
+This is the only project in the family holding **all eight** of the new ones, and the three
+it has to itself are the three a sandbox is the only home for.
+
+### `pg_generated`: the one map nobody wrote down
+
+Every other map in this family is a `_build()` full of constants, which is the right shape
+for a level somebody designed. This is the exception, and the argument is specific rather
+than general: **a sandbox's content is what the players build in it**, so "somewhere new"
+is worth more here than "somewhere good" — and it is the one map where a layout nobody has
+memorised is a feature.
+
+`PlaygroundWorldGen` is the pipeline: BSP rooms with big leaves (a maze of cupboards is the
+failure mode of every BSP generator set for a dungeon), corridors three cells wide with
+**loops on purpose** (a spanning tree has one route between any two rooms), scattered prop
+points with a minimum separation, and a validator.
+
+**The validator is why this is shippable.** It floods from the spawn, refuses a map where
+anything placed cannot be reached, refuses one that is technically connected and nine
+tenths wasted, fills in the sealed pockets, and the pipeline **retries on a different
+seed** up to ten times. A generated sandbox nobody could cross is the failure this exists
+to prevent, and it is invisible to every other kind of check — the counts are right, the
+rooms are the size they should be, and a player walks in and cannot get out.
+
+Three details that are not obvious:
+
+- **Walls are one box per RUN of solid cells**, not one per cell. A 40 × 40 map is about
+  900 solid cells; a box each is 900 static bodies and a physics broad phase sorting them
+  every tick, in a game whose whole point is throwing rigid bodies around.
+- **The map does not build itself in `_ready`.** A generated map needs a seed, and dot-map's
+  loader instantiates a scene and adds it with no moment in between — so `Playground`
+  calls `configure()` from its `map_changed` handler, **before** it spawns anybody. A
+  static holding the pending seed was the alternative, and a second server in one process
+  would read the first one's.
+- **There is no timer course on it**, deliberately. A generated jump course is a course
+  nobody can learn and a record nobody can beat. `pg_lobby` carries the timer.
+
+`pg_seed` is the cvar, and it is not a debugging affordance: **"play the map I played" is
+the single most-requested feature of every generated world**, and a seed nobody can name is
+a world nobody can share. Zero takes it from dot-randomness, so the map, the scattered
+props and the audio's own variation all come out of **one** number — three generators would
+be three numbers and "what seed are you on" would stop meaning anything.
+
+### The backpack, which is the thing between the menu and the shop
+
+| | |
+| --- | --- |
+| `PlaygroundSpawnMenu` | what exists. A catalogue. |
+| `PlaygroundShop` | what it costs. A price list and a purse. |
+| `PlaygroundInventory` | **what you have paid for and not yet used.** |
+
+Before this, the shop charged per *spawn* and nothing was ever held — so "buy three crates"
+and "buy one crate three times" were the same thing. `take()` refusing when you are not
+carrying one is the whole feature.
+
+**The item catalogue is derived from the prop catalogue**, so there is one list: the
+weight is the prop's own `mass` (which until now exactly one thing in this family read),
+the grid size comes from its declared size band, and the tag comes from the same
+`kind_of()` the spawner uses. A second table of what can be carried would go stale the
+first time somebody added a prop.
+
+Every mutation is an **op**, which is what makes client-side drag-and-drop safe: the client
+applies locally, sends, and rolls back on a refusal. A server receiving *state* would have
+to diff two documents, and a diff cannot tell "this crate moved" from "this crate was
+destroyed and an identical one appeared".
+
+### The presentation layer
+
+Settings, randomness, audio, effects and a console. Two decisions are this game's own:
+
+- **`prop_sounds` is about somebody else's building.** A busy sandbox is a permanent noise
+  otherwise, and your *own* prop still makes one because that is the answer to something
+  you just did.
+- **`refused` outranks a crate hitting the floor.** A refusal answers something the player
+  did; a crate landing does not.
+
+The randomness manager is built **before** the playground, because `Playground._ready`
+loads its first map inside `add_child` and a generated map asks the registry for a seed
+source at that moment. A manager registered afterwards is one the map did not use — and
+nothing would error, because falling back to a fixed seed is a legitimate configuration and
+therefore indistinguishable from the bug.
+
+### A host leaving a sandbox takes the sandbox with them
+
+`PlaygroundParty` makes the one decision no other game in the family makes: **migration is
+off because the world IS the host's physics state.** Every prop somebody spawned, every
+contraption they froze, lives in one process's rigid bodies — so electing a new host hands
+everybody an empty room, silently, with every count still correct.
+
+Five games, five reasons, two answers:
+
+| | migrates | why |
+| --- | --- | --- |
+| game-simple-lobby | yes | nothing is built, and a host leaving is somebody's evening |
+| game-hungario | yes | a continuous arena with no round to be in the middle of |
+| game-arena | no | the host holds the match clock, the score and every hitbox |
+| game-g2gfast | no | a time made of two machines' clocks is worse than no time |
+| this one | no | the world does not move with the host |
+
+The trust model is `HOST_AUTHORITATIVE` rather than sandboxed, which is the other
+disagreement: a sandbox is a place where a friend hosting *should* be able to hand out
+money and spawn a hundred crates, because that is the game. What must not leave is anything
+persistent, and `reporting_allowed()` is the one place that is asked.
+
+## Escape opens a menu now, and used to toggle the cursor
+
+This client had a spawn menu, a server browser and no pause screen. Escape toggled the mouse capture and nothing else, so the only route to a setting was the console.
+
+It now **releases the cursor on the first press and opens the menu on the second** — game-arena's two-step, and it exists for the browser rather than the desktop. Escape is how a browser itself exits pointer lock and it then refuses to re-enter for about a second, so a press that both released and opened would leave a menu up with no way to get the mouse back.
+
+Both screens are dot-ui's `DotPauseScreen` and `DotSettingsScreen` rather than this game's own, because four clients in the family had written the same panel-title-buttons shape and two copies of one thing is this tree's most repeated mistake. What is this game's own is the button list — Resume, Settings, Servers, Leave — and which document the settings screen edits.
+
+**A missing settings manager greys the button out** rather than opening an empty screen. A button that does nothing is worse than one that is visibly unavailable.
+
+**The check that matters is the round trip, not the drawing.** `DotSettingsManager.to_config()` hands out a snapshot, so a screen calling only the panel's apply would report success and change nothing — and every structural check passes either way. `headless_presentation` edits the volume, presses Apply, and reads the manager *and* the mixer.
+
+### And the menus are rendered now
+
+`tools/screenshot_menus.sh` renders the spawn menu, the pause screen and the settings screen. The spawn menu is the one worth the most: it is this project's own, it is the screen a player is in most often, and two of this game's interface bugs were in it — a `TabBar` that hid two of its three tabs behind scroll arrows, and an NPC silhouette that came out as a coloured bar. Both fixes hold; the picture shows three tabs, four category filters with counts and fourteen cards with icons.
+
+It found nothing new here, which is the result worth having: every bug the first frames of this pass turned up was in dot-ui or in another game, and this game's own screens came out right.
 
 ## Things deliberately not here
 

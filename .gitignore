@@ -6,7 +6,6 @@
 #   ln -s ../../dot-core/addons/dot_core addons/dot_core
 # A shipped build copies them in instead.
 /addons/dot_core
-/addons/dot_fps_controller
 /addons/dot_timer
 /addons/dot_map
 /addons/dot_props
@@ -53,3 +52,18 @@ Thumbs.db
 /addons/dot_economy
 /addons/dot_effects
 /addons/dot_spectate
+/addons/dot_settings
+/addons/dot_audio
+/addons/dot_fx
+/addons/dot_console
+/addons/dot_peer_to_peer
+/addons/dot_randomness
+/addons/dot_procedural_generation
+/addons/dot_inventory
+/addons/dot_physics
+/addons/dot_spawn
+/addons/dot_player
+/addons/dot_player_controller
+/addons/dot_player_char
+/addons/dot_player_class
+/addons/dot_team

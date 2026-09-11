@@ -4,7 +4,7 @@ extends Node
 ## Watching somebody else build, or fight, or drive into a wall.
 ##
 ## [b]A sandbox is the one place where watching is not about being dead.[/b] The
-## interesting thing on a Garry's Mod server is usually what somebody else is making,
+## interesting thing on a physics-sandbox server is usually what somebody else is making,
 ## and the answer to "what is that noise in the corner" is a camera. So the policy here
 ## is the loosest of the three games that have one: anybody, alive or dead, may watch
 ## anybody, and roaming is on — a free camera is how you look at a contraption from the

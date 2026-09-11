@@ -6,8 +6,9 @@ extends Node
 ## [b]The wave mode is the only co-operative thing in this family, and this is what makes
 ## it one.[/b] Until now a player killed by a wave respawned on a timer, which means the
 ## other players carried on shooting and nothing about the wave was harder for having
-## dropped somebody. Left 4 Dead's answer is the one every co-operative shooter since has
-## copied: at zero health you go **down** rather than dying, you bleed out over ninety
+## dropped somebody. The co-operative survival shooters' answer is the one every
+## co-operative shooter since has copied: at zero health you go **down** rather than
+## dying, you bleed out over ninety
 ## seconds, and picking you up costs somebody five seconds of not shooting.
 ##
 ## [b]Only while the waves are on.[/b] A sandbox where nobody dies is a very confusing
@@ -74,7 +75,7 @@ func _rules() -> DotEffectRules:
 	var rules := DotEffectRules.new()
 	rules.downed_enabled = true
 	rules.downed_health = 300.0
-	# 300 over about ninety seconds at this game's rate, which is Left 4 Dead's number
+	# 300 over about ninety seconds at this game's rate, which is the genre's number
 	# rather than a round one: it is long enough that a rescue is worth attempting and
 	# short enough that it is a decision.
 	rules.downed_bleed_per_tick = 300.0 / (90.0 * float(game.tick_rate))

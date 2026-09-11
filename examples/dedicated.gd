@@ -325,6 +325,36 @@ func _test_map_commands() -> void:
 		String(game.maps.current.id)
 	)
 
+	# The plain name, which is dot-map's now. It used to be dot-server's and it changed the
+	# GAME -- so on this server, one game and several maps, `map` did the one thing an
+	# operator typing it did not mean.
+	var plain := _run_command("map")
+	_check(_said(plain, "pg_surf_intro"), "`map` lists the maps", str(plain))
+
+	_run_command("map pg_surf_intro")
+	for _i in range(10):
+		await get_tree().process_frame
+	_check(
+		game.maps.current.id == &"pg_surf_intro",
+		"and `map <id>` changes it, through the game's own reset rather than the session",
+		String(game.maps.current.id)
+	)
+
+	var map_command: DotConCommand = server.console.find_command("map")
+	_check(map_command != null, "`map` is registered")
+	_check(
+		map_command != null and map_command.chat_allowed,
+		"and IS typable in chat here, because a sandbox has no ranked run for it to destroy"
+	)
+	_check(
+		server.console.find_command("game") != null,
+		"while `game` is what changes the game, which is what dot-server's `map` used to do"
+	)
+	_check(
+		server.console.find_command("mapinfo") != null,
+		"and `mapinfo` answers what `nextmap` and `timeleft` would, without taking dot-vote's names"
+	)
+
 	var next := _run_command("pg_nextmap")
 	_check(_said(next, "next"), "pg_nextmap says what plays next", str(next))
 

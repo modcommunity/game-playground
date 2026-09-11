@@ -50,7 +50,8 @@ func _build() -> void:
 ##
 ## [b]Both halves, and the second is the one that matters.[/b] An NPC that commits on the
 ## tick it first perceives somebody is one no player can ever surprise — `has_reacted` is
-## Quake III's reaction time, and the gate every "act on what you see" branch belongs
+## the arena shooters' reaction time, and the gate every "act on what you see" branch
+## belongs
 ## behind.
 func _sees(_ctx: DotNpcAiContext) -> bool:
 	return npc.has_target() and has_reacted()

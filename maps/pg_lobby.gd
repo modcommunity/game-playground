@@ -25,7 +25,7 @@ extends PlaygroundMap
 ## longer version of the first.[/b] Bonus 1 is a straight line with widening gaps: it
 ## asks how far a player can jump. Bonus 2 is a spiral climbing a tower: every jump is
 ## a turning one, so it asks whether they can keep their speed round a corner, which in
-## a Quake-style controller is air-strafing and is the thing the movement is actually
+## an arena-shooter controller is air-strafing and is the thing the movement is actually
 ## about. A second route through a map players already know is worth more than a fifth
 ## map nobody has learned, and this is what that means in practice: the walk to it is
 ## the same walk, and everything they learned about the jump distance still applies.

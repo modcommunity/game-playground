@@ -184,6 +184,27 @@ func _module_load() -> DotResult:
 	# stay console-only deliberately — drawing a start line is editing the map's rules,
 	# and somebody who can do it can invalidate every record on the map.
 	# --- Maps --------------------------------------------------------------
+	#
+	# `map`, `maps` and `mapinfo` come from dot-map itself now. They used to be dot-server's
+	# `map`, which changed the GAME -- so on this server, which runs one game and several
+	# maps, the plain name an operator reached for did the one thing they did not mean.
+	#
+	# `install_with` rather than `install`, because `Playground.change_map` resets the
+	# props, the NPCs and the course before it touches the session: handing the session
+	# straight to the command would change the world out from under all three.
+	#
+	# `allow_chat_change` is ON here and is off by default. This is a sandbox -- the thing
+	# a map change destroys on a records server is a run, and there are no ranked runs
+	# here -- and `pg_map` beside it has been `.with_chat()` since it was written.
+	var map_commands := DotMapCommands.new()
+	map_commands.session = game.maps
+	map_commands.change_fn = func(id: StringName) -> DotResult:
+		return await game.change_map(id)
+	map_commands.allow_chat_change = true
+	map_commands.player_count_fn = func() -> int:
+		return game.players.size()
+	map_commands.bind(self)
+
 	add_command(
 		"pg_map", _cmd_map, "Change map, or list what there is",
 		DotAdminFlags.CHANGEMAP

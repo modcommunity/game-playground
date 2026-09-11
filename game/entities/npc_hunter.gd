@@ -12,7 +12,8 @@ extends "res://game/entities/playground_entity.gd"
 ##
 ## What it buys, concretely:
 ##
-## - **A reaction time.** `DotNpcAiCharacter` is Quake III's characteristics table, and
+## - **A reaction time.** `DotNpcAiCharacter` is the arena shooters' characteristics
+##   table, and
 ##   `has_reacted()` is the gate every "act on what you see" branch belongs behind. An NPC
 ##   that turns and commits on the tick it first perceives somebody is one no player can
 ##   ever surprise, and that is the difference between a bot and a target.

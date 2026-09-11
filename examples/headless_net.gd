@@ -490,7 +490,7 @@ func _exchange() -> void:
 ## One tick on both ends, with a real physics frame between them.
 ##
 ## [b]The awaited physics frame is not padding.[/b] A player's movement is swept by
-## dot-fps-controller and lands wherever the arithmetic says, so a suite that drives
+## dot-player-controller and lands wherever the arithmetic says, so a suite that drives
 ## ticks in a tight loop moves players perfectly — which is why every other net suite in
 ## this family gets away without one. A PROP is a [RigidBody3D], integrated by Godot's
 ## physics server on the physics frame and by nothing else. Without this await the

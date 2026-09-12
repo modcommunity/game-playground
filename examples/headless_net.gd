@@ -802,8 +802,14 @@ func _test_tools() -> void:
 	_exchange()
 	await _steps(2)
 
+	# [b]Aimed at where the crate ended up, not at where it was put.[/b] It is a rigid
+	# body dropped at eye height and it falls about a third of a metre before the button
+	# is held — so a grab command that carries the default pitch is a ray over the top of
+	# it, and whether the tool fires depends on how many ticks the sections above happened
+	# to take. Aiming at the settled body is what makes this a test of the button.
 	var grab := DotFpsCommand.new()
 	grab.set_button(DotFpsCommand.BUTTON_USER_0, true)
+	_aim_at(grab, player, (crate.node as Node3D).global_position)
 	await _steps(12, grab)
 
 	_check(player.phys_gun.held != null,
@@ -818,6 +824,7 @@ func _test_tools() -> void:
 	var held_at := (crate.node as Node3D).global_position
 	var turn := DotFpsCommand.new()
 	turn.set_button(DotFpsCommand.BUTTON_USER_0, true)
+	turn.pitch = player.controller.state.pitch
 	turn.yaw = player.controller.state.yaw + 40.0
 	await _steps(16, turn)
 
@@ -831,6 +838,22 @@ func _test_tools() -> void:
 
 	_server_game.props.remove(crate.instance_id, DotPropSpawner.REASON_ADMIN)
 	await _exchange_steps(4)
+
+
+## Points [param command] at [param target] from [param player]'s eye.
+##
+## The inverse of [method DotFpsMotor.aim_for], and it is written as the inverse rather
+## than copied from it: a test that restates the view convention is a second place for
+## it to be wrong.
+func _aim_at(command: DotFpsCommand, player: PlaygroundPlayer, target: Vector3) -> void:
+	var to := target - player.eye_position()
+
+	if to.length_squared() <= 0.0:
+		return
+
+	to = to.normalized()
+	command.yaw = rad_to_deg(atan2(-to.x, -to.z))
+	command.pitch = rad_to_deg(asin(clampf(to.y, -1.0, 1.0)))
 
 
 ## A flush pair with ticks after it, which is what most of these want.
@@ -1019,7 +1042,18 @@ func _test_vehicle_over_the_wire() -> void:
 	# a gap here: a rigid body is not reproducible across machines, so a predicted
 	# vehicle is a corrected vehicle and a correction on something a player is steering
 	# reads worse than the latency does.
-	await _steps(320, _forward())
+	# [b]Sampled while it drives, not read off the end.[/b] 320 ticks at full throttle
+	# is further than the clear ground round the spawn: the car reaches about 10 m/s and
+	# then arrives at map geometry, and the reading taken after it has stopped against
+	# something is the rebound rather than the drive. It was -0.47 m/s, deterministically,
+	# while the car had plainly driven twelve metres in the direction it was pointed —
+	# a check measuring the wrong instant rather than a vehicle refusing to move.
+	var fastest := 0.0
+
+	for _leg in range(16):
+		await _steps(20, _forward())
+		fastest = maxf(fastest, vehicle.forward_speed())
+
 	_exchange()
 	await _steps(6)
 
@@ -1029,10 +1063,7 @@ func _test_vehicle_over_the_wire() -> void:
 	# in a given wall-clock stretch is not a constant — and a threshold set at the
 	# measured figure is a test that fails on a loaded machine rather than on a bug.
 	_check(travelled > 3.0, "keys sent over the wire drive it", "%.2f m" % travelled)
-	_check(
-		vehicle.forward_speed() > 0.5, "forwards",
-		"%.2f m/s" % vehicle.forward_speed()
-	)
+	_check(fastest > 0.5, "forwards", "%.2f m/s at its fastest" % fastest)
 	_check(
 		mirror != null and mirror.global_position.distance_to(mirror_before) > 2.0,
 		"and the client's copy went with it",

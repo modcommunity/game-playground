@@ -234,10 +234,36 @@ func _build_combat() -> DotResult:
 	kinetic.uses_hit_groups = true
 	combat.register_damage_type(kinetic)
 
+	# [b]The spawn window, asked at the one point every hit goes through.[/b] `hurt`'s
+	# comment above already names what an unstamped tick does to `DotHealth`'s window;
+	# this is the session-scoped record of the same idea, granted per respawn in
+	# `_on_respawn_due` and drained every tick, which until now nothing ever asked.
+	# A veto applied at the damage sites instead is one applied at the sites somebody
+	# remembered.
+	combat.resolver.adjust = _adjust_damage
+
 	combat.damage_applied.connect(_on_damage)
 	combat.entity_killed.connect(_on_killed)
 
 	return DotResult.success(null)
+
+
+## Refuses a hit on somebody inside their spawn window.
+##
+## Self damage and world damage are not blocked, and neither decision is made here:
+## [DotSpawnProtection.blocks] answers about the pair so that a protected player who
+## falls into a pit still dies in it.
+func _adjust_damage(damage: DotDamage) -> void:
+	if damage == null or game == null or game.player_stack == null:
+		return
+
+	if game.player_stack.blocks_damage(
+		str(_player_of_entity.get(damage.attacker, &"")),
+		str(_player_of_entity.get(damage.victim, &"")),
+		damage.tick,
+		damage.is_world_damage()
+	):
+		damage.refuse("spawn protection")
 
 
 func _build_match() -> DotResult:
@@ -322,6 +348,12 @@ func set_enabled(on: bool) -> void:
 		return
 
 	enabled = on
+
+	# The spawn window opens and shuts with the fight. Without this an operator who
+	# turned the arena on mid-session got no protection until the next map change, and
+	# one who turned it off kept granting it for ever.
+	if game != null and game.player_stack != null:
+		game.player_stack.refresh_spawn_rules()
 
 	if on:
 		match_node.start(_tick)
@@ -583,6 +615,18 @@ func _on_respawn_due(key: String, spawn: DotSpawnPoint, _tick_value: int) -> voi
 	var health := health_of(id)
 
 	if health != null:
+		# The class's numbers, before the reset — `reset` sets health to `max_health`, so
+		# raising the maximum afterwards leaves a "full" player on the old class's number.
+		var player_for_class: PlaygroundPlayer = game.players.get(id)
+
+		if game.player_stack != null and player_for_class != null:
+			game.player_stack.apply_class_numbers(
+				String(id),
+				health,
+				player_for_class.controller.tunables,
+				player_for_class.class_base_tunables()
+			)
+
 		health.revive(1.0)
 		health.reset(_tick)
 		health_changed.emit(id, health.health, health.armour, &"")

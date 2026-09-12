@@ -1,5 +1,5 @@
 class_name PlaygroundPlayer
-extends Node3D
+extends CharacterBody3D
 
 ## One player: movement, view, the timer, and the tools.
 ##
@@ -40,10 +40,28 @@ signal teleport_requested(to: Vector3, yaw: float)
 @export var samples_input: bool = false
 
 var controller: DotFpsController = null
+
+## The third-person controller, when this player has one. See [method set_view_mode].
+var tps: DotTpsController = null
+
+## Which of the two is driving. Built only on a player that can have a camera.
+var controller_switch: DotPlayerControllerSwitch = null
+
+## The dot-player component root the two controllers bind through.
+var player_node: DotPlayer = null
+
+## The body other people see. Null until [method build_character] is called.
+var character: PlaygroundCharacter = null
+
+## The locomotion state machine over that body.
+var anim: DotPlayerAnimDriver = null
 var view: DotFpsView = null
 
 ## Turns devices into commands, for a locally controlled player only.
 var sampler: DotFpsSampler = null
+
+## See [method class_base_tunables].
+var _class_base: DotFpsTunables = null
 
 ## This player's timer. Owned by the world's [DotTimerManager], not by this node.
 var timer: DotTimer = null
@@ -108,6 +126,190 @@ func _ready() -> void:
 	if samples_input:
 		sampler = DotFpsSampler.new(controller.tunables)
 		DotFpsSampler.register_default_actions(sampler)
+
+
+## Gives this player a third-person controller and the switch that hands between them.
+##
+## [b]The sandbox is where third person belongs, and the other two 3D games are where it
+## does not.[/b] game-g2gfast has a third-person view already and it is deliberately
+## *cosmetic* — `G2GCamera` flips between two cameras over one motor, because a run set in
+## third person has to be comparable with one set in first and a second movement model
+## would make it a different game. game-arena is lag-compensated and analytic: its server
+## and its clients agree because there is exactly one motor to agree about. A sandbox has
+## neither constraint — nothing here is ranked and nothing is rewound — so it is the one
+## place a genuinely different motor is free.
+##
+## [b]Built on demand, not for everybody.[/b] `DotTpsController` drives a
+## `CharacterBody3D` through Godot's physics, which is real per-tick cost, and a
+## dedicated server full of remote players that will never be looked at through a camera
+## should not pay it. Only a player that samples input gets one.
+##
+## Returns whether it was built.
+func build_view_switch() -> bool:
+	if tps != null:
+		return true
+
+	if not samples_input:
+		return false
+
+	# [b]The component root both controllers bind through.[/b] `DotPlayerController` is a
+	# `DotPlayerComponent`: it finds its player by walking up, reads the body from it and
+	# refuses to run unbound. Without this node the third-person controller has no body to
+	# ask for and logs "no CharacterBody3D for this player" once per activation.
+	player_node = DotPlayer.new()
+	player_node.name = "Player"
+	player_node.player_key = String(player_id)
+	player_node.is_local = true
+	# [b]No `roster_ref`, deliberately.[/b] `DotPlayer` binds on a key alone when it
+	# cannot find a roster, and everything the controllers ask it for — the body, whether
+	# the player is alive — is answered without one. Pointing it at the stack's roster
+	# would mean either a node path across two subtrees or turning
+	# `register_service` on, and a registry name is global to the process: two servers in
+	# one editor session would collide on it, which is the reason the stacks turn it off.
+	# The body is this node, which is why it is a CharacterBody3D at all.
+	player_node.body_ref = DotNodeRef.of_path(NodePath(".."))
+	add_child(player_node)
+
+	tps = DotTpsController.new()
+	tps.name = "ThirdPerson"
+	tps.controller_id = &"tp"
+	tps.tunables = DotTpsTunables.new()
+	add_child(tps)
+
+	# [b]The id BEFORE the switch is added, and that ordering is the bug.[/b]
+	# `DotPlayerControllerSwitch._ready` runs `refresh()` and activates its default the
+	# moment it enters the tree — so a controller still carrying an empty `controller_id`
+	# at that instant is registered under its class name instead, `default_controller`
+	# names something that is not there, and the switch falls back to whatever it found
+	# first. The sandbox opened in third person and the only symptom was the camera.
+	controller.controller_id = &"fp"
+
+	controller_switch = DotPlayerControllerSwitch.new()
+	controller_switch.name = "ViewSwitch"
+	# First person is what a sandbox opens in: the tools are aimed down a crosshair and a
+	# physics gun held over the shoulder is a different, worse tool.
+	controller_switch.default_controller = &"fp"
+	add_child(controller_switch)
+
+	return true
+
+
+## Gives this player a visible body and the locomotion state machine that drives it.
+##
+## [b]dot-player-char's visual half had no implementation in any game in this family.[/b]
+## Five projects installed the addon, four built a catalogue, and `DotPlayerCharVisual` —
+## the abstract node the whole addon exists to fill — was subclassed nowhere. It survived
+## because every game was first-person and nobody sees their own body; the third-person
+## camera is what made it visible, and the first frame through it was an empty view four
+## metres behind nothing.
+##
+## [param colour] is the player's own, so two people in a sandbox are told apart.
+func build_character(def: DotPlayerCharDef, colour: Color) -> void:
+	if def == null:
+		return
+
+	if character == null:
+		character = PlaygroundCharacter.new()
+		character.name = "Character"
+		add_child(character)
+
+	character.build_for(def, colour)
+
+	if anim == null:
+		anim = DotPlayerAnimDriver.new()
+		anim.name = "Animation"
+		# [b]Driven from here rather than by itself.[/b] `auto_drive` reads the body's
+		# transform once a frame and differentiates it, which is a second opinion about
+		# how fast the player is going — and this game already has an authoritative one
+		# on the controller. Two sources of "am I running" disagree exactly when a
+		# correction lands, which is when an animation pop is most visible.
+		anim.auto_drive = false
+		anim.anim_set = DotPlayerAnimSet.locomotion()
+		add_child(anim)
+
+	# First person hides the body the moment it is built: a player looking through their
+	# own eyes must not see the inside of their own head.
+	character.set_shown(view_mode() == &"tp")
+
+
+## Advances the locomotion state from the movement that just happened.
+##
+## Called from the game's tick, after the controller has simulated, for the ordering
+## reason every other consumer here follows: a state machine fed the position a player
+## was at is a state machine one tick behind the player.
+func drive_character(delta: float) -> void:
+	if anim == null or controller == null:
+		return
+
+	var state := controller.state
+	var _clip := anim.drive({
+		"speed": Vector2(state.velocity.x, state.velocity.z).length(),
+		"vertical": state.velocity.y,
+		"on_floor": state.is_grounded(),
+		"crouched": state.crouch_fraction > 0.5,
+		"facing": deg_to_rad(state.yaw),
+		"alive": true,
+	}, delta)
+
+	if character != null:
+		character.set_stance(state.crouch_fraction > 0.5)
+		# The body faces where the player is looking. Without this the capsule keeps the
+		# rotation it was built with and a third-person camera orbiting a player shows a
+		# character who never turns — which reads as the model being broken rather than
+		# as a missing line.
+		character.face(deg_to_rad(state.yaw))
+
+
+## Switches between the first- and third-person controllers.
+##
+## [b]The handover is the point, and it is the switch's rather than this game's.[/b]
+## Position, velocity and look angles cross; the motor state does not, because a
+## first-person air-strafe has no counterpart in a third-person motor and any mapping
+## between them is a lie. Returns the id now driving.
+func set_view_mode(third_person: bool) -> StringName:
+	if controller_switch == null:
+		return &"fp"
+
+	var wanted := &"tp" if third_person else &"fp"
+	var res := controller_switch.activate(wanted)
+	var now := StringName(str(res.value)) if res.ok else controller_switch.active_id()
+
+	# The body is shown in third person and hidden in first, which is the whole reason
+	# `DotPlayerCharVisual.set_shown` exists.
+	if character != null:
+		character.set_shown(now == &"tp")
+
+	return now
+
+
+## Which controller is driving.
+func view_mode() -> StringName:
+	return controller_switch.active_id() if controller_switch != null else &"fp"
+
+
+## Sets which collision layers this player's movement sweeps against.
+##
+## [b]Not `DotFpsTunables`' default of 1.[/b] One means bit 0, which is right only while
+## every body in the game is on bit 0 — the state a layout exists to end. Once props,
+## entities and vehicles moved to their own layers, a mask of 1 was a player who walks
+## through every crate, every NPC and every car in the sandbox, and nothing would have
+## said so: a sweep that hits nothing is a sweep, not an error.
+func use_collision_mask(mask: int) -> void:
+	if controller != null and controller.tunables != null:
+		controller.tunables.collision_mask = mask
+
+
+## The movement this player was built with, before any class scaled it.
+##
+## [b]Captured once, and it is what makes applying a class on every respawn safe.[/b] A
+## class's `move_speed_scale` is a multiplier; applied to tunables that already carry it
+## the product compounds, so four respawns as a 0.8 class is 0.41 of the speed, arrived
+## at silently with every number in the inspector looking deliberate.
+func class_base_tunables() -> DotFpsTunables:
+	if _class_base == null and controller != null and controller.tunables != null:
+		_class_base = controller.tunables.duplicate()
+
+	return _class_base
 
 
 ## The movement a bunny-hop and surf server runs.

@@ -858,7 +858,8 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
 done
 godot --headless --path . --script tools/export_zones.gd
 godot --headless --path . res://examples/headless_playground.tscn   # 276 checks
-godot --headless --path . res://examples/headless_presentation.tscn #  55 checks
+godot --headless --path . res://examples/headless_stack.tscn        #  40 checks
+godot --headless --path . res://examples/headless_presentation.tscn #  80 checks
 godot --headless --path . res://examples/headless_net.tscn          # 115 checks
 godot --headless --path . res://examples/dedicated.tscn             # 158 checks
 ```
@@ -1176,6 +1177,71 @@ Both screens are dot-ui's `DotPauseScreen` and `DotSettingsScreen` rather than t
 `tools/screenshot_menus.sh` renders the spawn menu, the pause screen and the settings screen. The spawn menu is the one worth the most: it is this project's own, it is the screen a player is in most often, and two of this game's interface bugs were in it — a `TabBar` that hid two of its three tabs behind scroll arrows, and an NPC silhouette that came out as a coloured bar. Both fixes hold; the picture shows three tabs, four category filters with counts and fourteen cards with icons.
 
 It found nothing new here, which is the result worth having: every bug the first frames of this pass turned up was in dot-ui or in another game, and this game's own screens came out right.
+
+
+## Third person, a body to see in it, and why the sandbox is where both belong
+
+`DotTpsController` and `DotPlayerControllerSwitch` had been written, tested and installed
+in three games and run in none of them; `DotPlayerCharVisual` — the abstract node
+dot-player-char exists to fill — was subclassed nowhere in the family. Both land here, and
+the argument for *here* is the same one twice:
+
+| | third person | why |
+| --- | --- | --- |
+| game-g2gfast | camera only, one motor | a run set in third person must be comparable with one set in first |
+| game-arena | none | analytic, lag-compensated: its server and clients agree because there is one motor to agree about |
+| **this one** | **a second controller** | nothing here is ranked and nothing is rewound |
+
+**F5 hands the player between two controllers**, and the handover carries position,
+velocity and look angles while deliberately dropping the motor state — a first-person
+air-strafe has no counterpart in a third-person motor and any mapping between them is a
+lie. That is `DotPlayerControllerSwitch`'s whole reason to exist and this is the only
+place it runs.
+
+**A `PlaygroundPlayer` is a `CharacterBody3D` now**, because that is what
+`DotTpsController` drives. It is classified onto the layout's `player` layer for the same
+reason every other body here is: a body on layer 1 is a body every other sweep treats as
+level geometry.
+
+**`PlaygroundCharacter` draws a body from the character definition**, in primitives, which
+is this project's own rule applied one level up — `PlaygroundIcons` already draws a menu
+card from the three `meta` fields a prop's body is built from, so that a barrel is a green
+cylinder in both places. A `DotPlayerCharDef` carries a height, a radius and an eye height,
+and those three numbers are enough to build a body that is the right size. A server with
+content points `DotPlayerModelDef.rig_scene` at real art and the same class adopts it
+instead, which is what `DotPlayerModelRig.adopt` is for.
+
+Two things that cost a frame each to find:
+
+- **`DotPlayerCharVisual` is a `DotPlayerComponent`, which is a plain `Node`.** It has no
+  `rotation` and no `visible`, because a component is a behaviour rather than a place. The
+  body goes under the **rig**, which is the `Node3D` — and is also what `set_shown` hides
+  and what the mounts hang off. Parenting it to the visual gives a character that cannot
+  be turned or hidden, with a runtime error per tick.
+- **`DotPlayerAnimDriver.auto_drive` is off.** It reads the body's transform once a frame
+  and differentiates it, which is a second opinion about how fast the player is going, and
+  this game already has an authoritative one on the controller. Two sources of "am I
+  running" disagree exactly when a correction lands.
+
+`tools/screenshot_views.sh` renders both views. It is not optional after touching either
+controller: every check on the switch is a check on an *id*, and an id is equally happy
+when the camera is inside the character's head.
+
+## The chat box, and the channels it offers
+
+`PlaygroundPresentation` builds dot-ui's `DotChatWindow` beside the console. The corner is free here: this HUD keeps its timer block at the top left and its notice below it.
+
+**The channels come from `PlaygroundServices.chat_channels()`, not from a list in the presentation layer.** Two copies of one list is this tree's most repeated bug; the server routes with those definitions, so the composer offers exactly what it routes. The admin channel is filtered out because it is admin-only, and a channel a player cannot send on should not be in the cycle. The second key opens the **proximity** channel rather than a team one — a sandbox has no teams, and what it has is the difference between telling the server and telling whoever is standing beside your build.
+
+| | |
+| --- | --- |
+| `chat_window` | `auto` / `on` / `off`. `auto` hides the box on a server already carrying chat somewhere the player can see it; `on` draws it regardless; `off` never does. |
+| `chat_open_key` | `Y` by default. |
+| `chat_near_key` | `U` by default. |
+
+**dot-server's `chat_received` is connected here and its LINES are ignored**, which reads like the bug this game's own comment warns about and is the opposite of it. This game routes every line through its own wire on purpose, and connecting both would draw one line twice — so the handler takes the one payload that is *not* a line, the `{kind: "state"}` notice saying what is carrying chat, and drops everything else. There is nowhere else for that notice to arrive.
+
+`swallows_input()` covers the box as well as the console, and `DotFpsSampler.suspended` is set beside it: movement is polled, so without it typing "sw" walks the player backwards through whatever they were building, firing whatever tool they are holding.
 
 ## Things deliberately not here
 

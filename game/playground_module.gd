@@ -171,18 +171,19 @@ func _module_load() -> DotResult:
 		DotAdminFlags.CHANGEMAP
 	)
 
-	# **`.with_chat()` is what lets a player type any of these.**
-	# `DotConCommand.chat_allowed` defaults to FALSE and `DotConsole._run_command`
-	# refuses a `Source.CHAT` context without it — and dot-server's chat manager, which
-	# is what actually handles a `!command`, dispatches with exactly that source.
+	# **`.with_chat()` says a command is typable whatever the server's default is.**
+	# The default used to be "no": `chat_allowed` was false, `DotConsole._run_command`
+	# refused a `Source.CHAT` context without it, and dot-server's chat manager dispatches
+	# with exactly that source — so this module registered thirty-two commands and not one
+	# could be reached from chat. `!pg_rtv`, on a server whose whole point is rocking the
+	# vote, answered "'pg_rtv' cannot be run from chat." `sv_chat_commands` is that default
+	# turned around, and it ships on.
 	#
-	# So this module registered thirty-two commands and not one could be reached from
-	# chat: `!pg_rtv`, on a server whose whole point is rocking the vote, answered
-	# "'pg_rtv' cannot be run from chat."
-	#
-	# Marked here are the player-facing ones and the two map ones. The ZONE commands
-	# stay console-only deliberately — drawing a start line is editing the map's rules,
-	# and somebody who can do it can invalidate every record on the map.
+	# Marking still means something: these survive an operator turning it off, because they
+	# are what a player is expected to type. The ZONE commands below carry CHANGEMAP and
+	# rely on it — drawing a start line is editing the map's rules, and somebody who can do
+	# it can invalidate every record on the map, which is a question about the flag rather
+	# than about the prefix.
 	# --- Maps --------------------------------------------------------------
 	#
 	# `map`, `maps` and `mapinfo` come from dot-map itself now. They used to be dot-server's
@@ -193,9 +194,10 @@ func _module_load() -> DotResult:
 	# props, the NPCs and the course before it touches the session: handing the session
 	# straight to the command would change the world out from under all three.
 	#
-	# `allow_chat_change` is ON here and is off by default. This is a sandbox -- the thing
-	# a map change destroys on a records server is a run, and there are no ranked runs
-	# here -- and `pg_map` beside it has been `.with_chat()` since it was written.
+	# `allow_chat_change` is ON, which is now also the default -- it was off, and the
+	# sandbox was the first place the old default read as an obstruction rather than a
+	# policy. What a map change destroys on a records server is a run, and there are no
+	# ranked runs here; `pg_map` beside it has been `.with_chat()` since it was written.
 	var map_commands := DotMapCommands.new()
 	map_commands.session = game.maps
 	map_commands.change_fn = func(id: StringName) -> DotResult:
@@ -420,6 +422,12 @@ func _build_extras() -> DotResult:
 		return watching.wrap("Spectating could not be set up")
 
 	spectate.arena = arena
+
+	# And the spawn director, which needs it for the protection window: a sandbox has
+	# nothing to be protected from and the arena's own match rules carry how long.
+	if game.player_stack != null:
+		game.player_stack.arena = arena
+		game.player_stack.refresh_spawn_rules()
 
 	downs = PlaygroundDowns.new()
 	downs.name = "Downs"

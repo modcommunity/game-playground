@@ -340,6 +340,12 @@ func _simulate_tick(step: float) -> void:
 	# position for this tick is where the vehicle carried them, not where they were.
 	_carry_riders()
 
+	# And the locomotion state, from the movement that has just happened. Same rule
+	# again: a state machine fed the position a player WAS at is one tick behind them,
+	# and at a walk-to-run threshold that is a visible late change of animation.
+	for id in players:
+		(players[id] as PlaygroundPlayer).drive_character(step)
+
 	for id in players:
 		var player: PlaygroundPlayer = players[id]
 		var sample: DotTimerSample = _samples[id]
@@ -540,6 +546,8 @@ func _build_props() -> void:
 ## prop's scene needs is the game's business and overriding the spawner would mean
 ## re-implementing the budget, the cooldown and the undo stack to get at one line.
 func _on_prop_spawned(prop: DotPropInstance) -> void:
+	_classify_spawned(prop)
+
 	match PlaygroundSpawnables.kind_of(prop.def):
 		PlaygroundSpawnables.Kind.ENTITY:
 			_configure_entity(prop)
@@ -558,6 +566,57 @@ func _on_prop_spawned(prop: DotPropInstance) -> void:
 		return
 
 	body.configure(prop.def)
+
+
+## Puts a spawned body on the layer that matches what it is.
+##
+## [b]`sandbox_3d` is the one preset with `held_prop` and `frozen_prop` in it, and this is
+## why they exist.[/b] A prop being carried by the physics gun must not collide with the
+## player carrying it — otherwise it shoves them backwards down a corridor — and a frozen
+## prop is scenery that everything should be solid against. They are different rows in the
+## layout rather than different code, which is the whole argument for having one.
+##
+## Everything arrived on Godot's default layer 1 masking layer 1 before this, so two
+## crates dropped in the same place fell through one another and an NPC was indis-
+## tinguishable from the floor as far as collision was concerned.
+##
+## [b]Spawn time only, and that is a real limitation.[/b] dot-props emits `spawned`,
+## `removed` and `refused` and has no signal for freezing or grabbing, so a prop frozen
+## later keeps the layer it spawned with. `PlaygroundProp` calls `reclassify` when it
+## changes state, which is the half this can reach.
+func _classify_spawned(prop: DotPropInstance) -> void:
+	if player_stack == null or prop.node == null:
+		return
+
+	var layer := &"prop"
+
+	match PlaygroundSpawnables.kind_of(prop.def):
+		PlaygroundSpawnables.Kind.ENTITY:
+			layer = &"npc"
+		PlaygroundSpawnables.Kind.VEHICLE:
+			layer = &"vehicle"
+		_:
+			layer = &"frozen_prop" if prop.frozen else &"prop"
+
+	var _put := player_stack.classify(prop.node, layer)
+
+
+## Re-reads a prop's layer after it was frozen, unfrozen, grabbed or dropped.
+##
+## Public because the states change long after the spawn and dot-props has no signal for
+## any of them — so the code that changes the state is the code that has to say so.
+func reclassify_prop(node: Node, frozen: bool, held: bool) -> void:
+	if player_stack == null or node == null:
+		return
+
+	var layer := &"prop"
+
+	if held:
+		layer = &"held_prop"
+	elif frozen:
+		layer = &"frozen_prop"
+
+	var _put := player_stack.classify(node, layer)
 
 
 ## Turns a spawned body into a scripted entity, by attaching the script its definition
@@ -972,9 +1031,41 @@ func add_player(id: StringName, display_name: String) -> PlaygroundPlayer:
 	player.phys_gun.spawner = props
 	player.phys_gun.wielder = id
 
+	# [b]A held prop, a frozen prop and a loose one are three rows in the layout.[/b]
+	# `sandbox_3d` carries `held_prop` and `frozen_prop` for exactly this, and until
+	# dot-props grew these three signals a game could only set a layer at spawn and then
+	# be wrong for the rest of the prop's life — a carried crate colliding with the
+	# player carrying it, which shoves them backwards down a corridor.
+	player.phys_gun.grabbed.connect(
+		func(prop: DotPropInstance, _who: StringName) -> void:
+			reclassify_prop(prop.node, false, true)
+	)
+	player.phys_gun.released.connect(
+		func(prop: DotPropInstance, _who: StringName) -> void:
+			reclassify_prop(prop.node, prop.frozen, false)
+	)
+	player.phys_gun.freeze_changed.connect(
+		func(prop: DotPropInstance, frozen: bool) -> void:
+			reclassify_prop(prop.node, frozen, prop.held_by != &"")
+	)
+
 	player.grav_gun = DotGravGun.new()
 	player.grav_gun.spawner = props
 	player.grav_gun.wielder = id
+
+	# The layout's player mask rather than the magic 1. With props, entities and
+	# vehicles on their own layers, a mask of 1 is a player who walks through all three.
+	if player_stack != null:
+		player.use_collision_mask(player_stack.player_collision_mask())
+		# And a body other people can see. Built for every player, local or not: the one
+		# who does not need it is the LOCAL player in first person, and that is a
+		# `set_shown(false)` rather than a missing model.
+		player.build_character(player_stack.character(), _colour_for(id))
+		# And the body itself, now that a player IS a CharacterBody3D — it is in the
+		# physics space whether or not the movement uses it, and a body on layer 1 is a
+		# body every other sweep treats as level geometry.
+		var _put := player_stack.classify(player, &"player")
+
 
 	players[id] = player
 	_samples[id] = DotTimerSample.new()
@@ -1031,6 +1122,19 @@ func remove_player(id: StringName) -> void:
 
 
 ## Puts a player at the current map's spawn for their track.
+
+## A stable colour for a player, derived from their id.
+##
+## [b]Derived rather than assigned, so two machines agree without sending anything.[/b]
+## A colour handed out by the server is one more field on the wire and one more thing to
+## be out of step during a reconnect; a hash of the id is the same colour everywhere, for
+## ever, for free. Full saturation and a fixed value, because two players told apart by
+## brightness alone are not told apart at a distance.
+func _colour_for(id: StringName) -> Color:
+	var hue := float(hash(String(id)) % 360) / 360.0
+	return Color.from_hsv(hue, 0.62, 0.92)
+
+
 func spawn_player(id: StringName) -> void:
 	var player: PlaygroundPlayer = players.get(id)
 
@@ -1039,6 +1143,24 @@ func spawn_player(id: StringName) -> void:
 
 	var track := player.timer.track if player.timer != null else DotTimerTrack.MAIN
 	var map := current_map_node()
+
+	# [b]The director chooses among the map's own starts; the map is the fallback.[/b]
+	# `PlaygroundPlayerStack.refresh_spawns` copies every track's start into it, so this
+	# is a better choice among one set rather than a second set — the per-site cooldown,
+	# the occupancy check, and with the arena layer on the protection window that is
+	# granted inside `choose` and nowhere else.
+	if player_stack != null:
+		var chosen := player_stack.choose_start(id, track)
+
+		if chosen.ok:
+			var choice := chosen.value as DotSpawnChoice
+			# Degrees out, for the same reason radians went in: `DotFpsState.yaw` is in
+			# degrees and `DotFpsController` converts at exactly this boundary too.
+			player.teleport(
+				choice.transform.origin,
+				rad_to_deg(choice.transform.basis.get_euler().y)
+			)
+			return
 
 	if map != null:
 		player.teleport(map.spawn_for(track), map.spawn_yaw_for(track))

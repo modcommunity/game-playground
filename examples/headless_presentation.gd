@@ -14,7 +14,7 @@ extends Node
 ##
 ## Exits non-zero on any failure.
 
-const CHECKS := 65
+const CHECKS := 80
 
 var _passed := 0
 var _failed := 0
@@ -43,6 +43,7 @@ func _run() -> void:
 	_test_console()
 	_test_party_does_not_migrate()
 	await _test_escape_menu()
+	_test_chat_box()
 
 	print("")
 	_check(
@@ -427,6 +428,78 @@ func _test_party_does_not_migrate() -> void:
 	_check(says, "and it says so when asked, rather than leaving it to be discovered")
 
 	party.queue_free()
+	_done()
+
+
+func _test_chat_box() -> void:
+	_section("A sandbox where you can be talked to and can talk back")
+
+	var p := _make()
+	var window := p.chat_window
+
+	_check(window != null, "the client builds a chat box at all")
+
+	if window == null:
+		_done()
+		return
+
+	_check(
+		DotInputBinding.describe_action(window.open_action) == "Y",
+		"opened by Y, which is where this genre has put it for twenty-five years"
+	)
+
+	# The channels are the server's own definitions rather than a second list here.
+	var ids := PackedStringArray()
+	for entry in window.channels:
+		ids.append(String(entry.get("id", "")))
+	_check(
+		Array(ids).has(String(PlaygroundServices.CHANNEL_ALL))
+			and Array(ids).has(String(PlaygroundServices.CHANNEL_NEAR)),
+		"offering the channels the server actually routes (%s)" % [ids]
+	)
+	_check(
+		not Array(ids).has(String(PlaygroundServices.CHANNEL_ADMIN)),
+		"and not the admin one, which a player cannot send on anyway"
+	)
+
+	_check(window.enabled, "drawn by default, on a server that said nothing")
+
+	p.set_chat_relayed(true)
+	_check(not window.enabled, "auto takes it away when a relay is carrying chat")
+
+	window.add_said("someone", "but you can still hear this")
+	_check(
+		window.line_count() > 0,
+		"and the log still draws what other people said",
+		"off means you type somewhere else, never that you are out of the conversation"
+	)
+
+	p.settings.set_value(&"chat_window", &"on")
+	_check(window.enabled, "on keeps the box even with a relay running: both, if you want")
+
+	p.settings.set_value(&"chat_window", &"off")
+	_check(not window.enabled, "off never draws it")
+
+	p.settings.set_value(&"chat_window", &"auto")
+	p.set_chat_relayed(false)
+	_check(window.enabled, "and auto gives it back")
+
+	p.settings.set_value(&"chat_open_key", "T")
+	_check(
+		DotInputBinding.describe_action(window.open_action) == "T",
+		"rebinding through the settings document moves the key"
+	)
+	_check(
+		InputMap.action_get_events(window.open_action).size() == 1,
+		"and leaves ONE binding, not the old one as well"
+	)
+
+	_check(not p.swallows_input(), "a closed box does not swallow input")
+	window.open()
+	_check(p.swallows_input(), "an open one does, so a typed key is not a tool being fired")
+	window.close()
+	_check(not p.swallows_input(), "and gives it back when it closes")
+
 	_done()
 
 

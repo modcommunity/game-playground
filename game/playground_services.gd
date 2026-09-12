@@ -355,6 +355,12 @@ func _build_relay() -> DotResult:
 
 	relay.site_command.connect(_on_site_command)
 
+	# [b]Tell the clients.[/b] A player whose lines already reach a page they are looking
+	# at does not need a chat box in front of the game, and a player whose lines reach
+	# nothing but this server needs one badly. Only the server knows which.
+	if server != null and server.chat != null:
+		server.chat.watch_relay(relay)
+
 	return DotResult.success(relay)
 
 

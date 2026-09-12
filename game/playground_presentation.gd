@@ -27,9 +27,16 @@ var fx: DotFxManager = null
 var console: DotConsoleController = null
 var console_panel: DotConsolePanel = null
 
+## The in-game chat box. See [method _build_chat].
+var chat_window: DotChatWindow = null
+
 var client: Node = null
 
 var _layer: CanvasLayer = null
+var _chat_layer: CanvasLayer = null
+
+## Whether the server said something else is carrying chat. See [method set_chat_relayed].
+var _chat_relayed: bool = false
 
 
 func setup() -> DotResult:
@@ -54,6 +61,8 @@ func setup() -> DotResult:
 	var consoled := _build_console()
 	if not consoled.ok:
 		return consoled
+
+	_build_chat()
 
 	apply_all()
 	return DotResult.success(null)
@@ -110,6 +119,24 @@ static func schema() -> DotSettingsSchema:
 		.with_description("Zero turns camera shake off entirely."))
 	s.add(DotSettingsDef.boolean(&"allow_flashes", true, &"accessibility"))
 
+	# Chat. ACCOUNT scope for all three: which key opens chat and whether a player wants
+	# the box at all is about the person, not about this machine.
+	s.add(DotSettingsDef.choice(
+		&"chat_window",
+		&"auto",
+		[&"auto", &"on", &"off"] as Array[StringName],
+		&"chat"
+	).with_scope(DotSettingsDef.Scope.ACCOUNT).with_description(
+		"auto hides the box on a server already carrying chat somewhere the player can "
+		+ "see it; on always draws it; off never does."
+	))
+	s.add(DotSettingsDef.binding(&"chat_open_key", "Y", &"chat").with_scope(
+		DotSettingsDef.Scope.ACCOUNT
+	))
+	s.add(DotSettingsDef.binding(&"chat_near_key", "U", &"chat").with_scope(
+		DotSettingsDef.Scope.ACCOUNT
+	).with_description("Opens chat on the proximity channel rather than on all."))
+
 	# A sandbox's own: how much of somebody else's building you want to be told about.
 	s.add(DotSettingsDef.boolean(&"prop_sounds", true, &"sandbox").with_description(
 		"Whether other people's props make a noise when they land."
@@ -150,6 +177,12 @@ func _on_setting_changed(key: StringName, value: Variant, _why: StringName) -> v
 			fx.config.allow_flashes = bool(value)
 		&"fx_quality":
 			fx.config.quality = int(value)
+		&"chat_window":
+			_apply_chat_visibility()
+		&"chat_open_key":
+			_bind_chat(chat_window.open_action if chat_window != null else &"", str(value))
+		&"chat_near_key":
+			_bind_chat(chat_window.team_action if chat_window != null else &"", str(value))
 		_:
 			pass
 
@@ -313,6 +346,89 @@ func _build_fx() -> DotResult:
 
 # --- Console ----------------------------------------------------------------
 
+# --- Chat -------------------------------------------------------------------
+
+## The box a player types in, and the three settings that decide it.
+##
+## [b]The channels come from [code]PlaygroundServices.chat_channels[/code], not from a
+## list here.[/b] Two copies of one list is this tree's most repeated bug; the server
+## routes with those definitions and the composer offers exactly what it routes. The
+## admin channel is filtered out because it is admin-only and a channel a player cannot
+## send on is a channel that should not be in the cycle.
+func _build_chat() -> void:
+	_chat_layer = CanvasLayer.new()
+	_chat_layer.name = "ChatLayer"
+	_chat_layer.layer = 100
+	add_child(_chat_layer)
+
+	var offered: Array[Dictionary] = []
+
+	for channel in PlaygroundServices.chat_channels():
+		if channel.admin_only or channel.server_only:
+			continue
+
+		offered.append({
+			"id": channel.id,
+			"label": "Say" if channel.display_name == "" else "Say (%s)" % channel.display_name,
+			"colour": channel.colour,
+			# The proximity channel is what the second key opens here. A sandbox has no
+			# teams; what it has is the difference between telling the server and telling
+			# whoever is standing beside your build.
+			"team": channel.scope == DotChatChannel.Scope.RADIUS,
+		})
+
+	chat_window = DotChatWindow.new()
+	chat_window.name = "ChatWindow"
+	chat_window.open_action = &"playground_chat"
+	chat_window.team_action = &"playground_chat_near"
+	chat_window.channels = offered
+	_chat_layer.add_child(chat_window)
+
+
+## Puts one binding from the settings document onto its action.
+##
+## Empty is left alone rather than applied: a settings file somebody cleared the field in
+## would otherwise unbind chat with no way to get it back from inside the game.
+func _bind_chat(action: StringName, text: String) -> void:
+	if action == &"" or text.strip_edges() == "":
+		return
+
+	var bound := DotInputBinding.apply(action, text)
+
+	if bound == "":
+		DotLog.warn(CHANNEL, "a chat key was not understood", {
+			"action": String(action), "binding": text
+		})
+
+
+## The server said whether anything else is carrying this conversation.
+func set_chat_relayed(relayed: bool) -> void:
+	if _chat_relayed == relayed:
+		return
+
+	_chat_relayed = relayed
+	_apply_chat_visibility()
+
+
+## Resolves the three-way setting against what the server said.
+##
+## `on` is both halves at once — a relayed server AND a box in front of the game. `off` is
+## a player who chats somewhere else. `auto` draws it unless this server is already putting
+## these lines somewhere this player can see them. In every case the log keeps drawing what
+## other people said.
+func _apply_chat_visibility() -> void:
+	if chat_window == null or settings == null:
+		return
+
+	match StringName(str(settings.get_value(&"chat_window"))):
+		&"on":
+			chat_window.enabled = true
+		&"off":
+			chat_window.enabled = false
+		_:
+			chat_window.enabled = not _chat_relayed
+
+
 func _build_console() -> DotResult:
 	console = DotConsoleController.new()
 	console.name = "Console"
@@ -383,8 +499,16 @@ func camera_shake() -> Vector3:
 	return fx.shake.offset()
 
 
+## Whether something on screen owns the keyboard right now.
+##
+## [b]The chat box belongs here for the reason the console does.[/b] A client that keeps
+## reading movement while somebody types walks them across the map, and in a sandbox it
+## also fires whatever tool they are holding at whatever they were building.
 func swallows_input() -> bool:
-	return console_panel != null and console_panel.has_keyboard_focus()
+	if console_panel != null and console_panel.has_keyboard_focus():
+		return true
+
+	return chat_window != null and chat_window.is_open()
 
 
 func on_prop_spawned(at: Vector3, mine: bool) -> void:
@@ -442,4 +566,7 @@ func describe_lines() -> PackedStringArray:
 	out.append_array(settings.describe_lines())
 	out.append_array(audio.describe_lines())
 	out.append_array(fx.describe_lines())
+
+	if chat_window != null:
+		out.append("chat box: %s" % str(chat_window.describe()))
 	return out

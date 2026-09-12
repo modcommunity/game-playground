@@ -185,6 +185,7 @@ func _ready() -> void:
 	presentation.client = self
 	add_child(presentation)
 	DotLog.result("playground.client", "the presentation layer", presentation.setup())
+	_wire_chat_window()
 
 	playground.config = config
 	playground.config_file = config_file
@@ -256,6 +257,7 @@ func _ready() -> void:
 		DotFpsSampler.register_default_actions(player.sampler)
 
 		_build_view()
+		_build_view_switch()
 
 	hud = PlaygroundHud.new()
 	hud.name = "Hud"
@@ -390,6 +392,7 @@ func _adopt() -> void:
 	# Now, and not before: this is the first moment there is a node to parent a camera
 	# to. See the note in _ready.
 	_build_view()
+	_build_view_switch()
 
 	if _sampler != null:
 		_sampler.tunables = player.controller.tunables
@@ -434,6 +437,25 @@ func _build_view() -> void:
 	player.view = view
 
 
+
+## Builds the third-person controller and the switch, on the local player only.
+##
+## [b]Here rather than in `Playground.add_player`, and the ordering is the whole
+## reason.[/b] `samples_input` is set by this client AFTER the player is made — the
+## comment above says why — so a switch built inside `add_player` would look at a player
+## who is not yet local, decide there was no camera to serve, and build nothing. The
+## symptom would be F5 doing nothing, on the one player it is supposed to work for.
+func _build_view_switch() -> void:
+	if player == null:
+		return
+
+	player.samples_input = true
+
+	if not player.build_view_switch():
+		DotLog.warn(CHANNEL, "no view switch for the local player", {
+			"player": String(player_id)
+		})
+
 ## Chat and voice, once the bridge exists.
 func _build_client_services() -> void:
 	chat = DotChatClient.new()
@@ -468,6 +490,72 @@ func _build_client_services() -> void:
 	bridge.voice_arrived.connect(voice.receive)
 
 
+# --- Chat ------------------------------------------------------------------
+
+## Joins the chat box to the three things it needs.
+##
+## [b]The sampler is the half that is easy to forget.[/b] `swallows_input` keeps typed keys
+## out of `_unhandled_input`, but movement here is POLLED — `DotFpsSampler.sample` reads
+## the device every physics frame and does not care what consumed an event. Without
+## `suspended`, typing "sw" walks the player backwards through whatever they were building.
+##
+## [b]dot-server's `chat_received` is connected here and its LINES are ignored.[/b] This
+## game routes every line through its own wire on purpose — connecting both would draw one
+## line twice — but the state payload that says what is carrying chat comes down
+## dot-server's side and there is nowhere else to hear it. So the handler takes the one
+## kind it came for and drops everything else.
+func _wire_chat_window() -> void:
+	var window: DotChatWindow = presentation.chat_window if presentation != null else null
+
+	if window == null:
+		return
+
+	window.submitted.connect(_on_chat_submitted)
+
+	window.opened.connect(func(_channel: StringName) -> void:
+		var sampler := active_sampler()
+		if sampler != null:
+			sampler.suspended = true
+	)
+
+	window.closed.connect(func() -> void:
+		var sampler := active_sampler()
+		if sampler != null:
+			sampler.suspended = false
+	)
+
+	var client_link := DotRegistry.get_service(&"dot_client_link")
+
+	if client_link != null and client_link.has_signal("chat_received"):
+		client_link.connect("chat_received", _on_server_chat_state)
+
+
+## dot-server's chat payload, read ONLY for what is carrying the conversation.
+func _on_server_chat_state(payload: Dictionary) -> void:
+	if str(payload.get("kind", "")) != "state":
+		# A line. This game draws lines off its own wire and drawing them here as well is
+		# the same line twice.
+		return
+
+	if presentation != null:
+		presentation.set_chat_relayed(bool(payload.get("relay", false)))
+
+
+## What a player typed, on its way to the server.
+##
+## Nothing is filtered here: the server decides what a line may contain and its answer is
+## the only one that counts.
+func _on_chat_submitted(text: String, channel: StringName) -> void:
+	if bridge != null:
+		bridge.say(channel, text)
+		return
+
+	# No bridge is a single-player sandbox, where there is no server to decide anything.
+	# Drawing it locally is better than a box that swallows what you type.
+	if presentation != null and presentation.chat_window != null:
+		presentation.chat_window.add_said("You", text, Color(0.62, 0.78, 1.0))
+
+
 ## A routed line off this game's own wire, filed by [DotChatClient] — which drops a
 ## duplicate and reports a gap.
 func _on_chat_wire(wire: Dictionary) -> void:
@@ -487,11 +575,21 @@ func _on_chat_message(message: DotChatMessage, channel_id: StringName) -> void:
 	var chan := chat.channel(channel_id)
 	var prefix := "%s " % chan.prefix if chan != null and chan.prefix != "" else ""
 
+	var window: DotChatWindow = presentation.chat_window if presentation != null else null
+	var colour := chan.colour if chan != null else Color(0.88, 0.90, 0.94)
+
 	if message.is_from_server() or message.sender_name == "":
 		hud.notice("%s%s" % [prefix, message.text])
+
+		if window != null:
+			window.add_text("%s%s" % [prefix, message.text], Color(0.80, 0.82, 0.86))
+
 		return
 
 	hud.notice("%s%s: %s" % [prefix, message.sender_name, message.text])
+
+	if window != null:
+		window.add_said("%s%s" % [prefix, message.sender_name], message.text, colour)
 
 
 ## Somebody's health changed, or they died. Drawn, never decided.
@@ -849,6 +947,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			_cycle_checkpoint()
 		KEY_B:
 			_clear_checkpoints()
+		KEY_F5:
+			# The key every third-person toggle in this genre is on, and the one
+			# game-g2gfast already uses for its own. This one hands the player to a
+			# different CONTROLLER rather than flipping a camera, which is why the
+			# handover carrying position, velocity and look matters: pressing it
+			# mid-jump must not stop you dead in the air.
+			_toggle_view()
 		KEY_ESCAPE:
 			# Only when no screen is up. The stack's own back handling pops the menu,
 			# and a second handler here would pop it and open the pause menu in one
@@ -1458,6 +1563,23 @@ func _cycle_style() -> void:
 ## on the main track and a jump course on bonus 1, which is what lets one map be both
 ## without a timer running over somebody who is building — and without this the bonus
 ## track would be a zone set nothing could ever enter.
+
+## First person to third and back, through the controller switch.
+##
+## [b]A different motor, not a moved camera[/b] — which is the distinction that decides
+## where this feature belongs. game-g2gfast has a third-person view and keeps one motor
+## under it on purpose: a run set in third person has to be comparable with one set in
+## first. A sandbox ranks nothing, so it can afford the better third-person movement —
+## camera-relative input, an orbit rig on a spring arm, coyote time and a jump buffer.
+func _toggle_view() -> void:
+	if player == null or player.controller_switch == null:
+		return
+
+	var now := player.set_view_mode(player.view_mode() == &"fp")
+	if hud != null:
+		hud.notice("View: %s" % ("third person" if now == &"tp" else "first person"))
+
+
 func _cycle_track() -> void:
 	if player.timer == null:
 		return

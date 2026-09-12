@@ -36,7 +36,14 @@ func setup(p_game: Playground) -> DotResult:
 	manager.authoritative = game.authoritative
 	manager.rules = _rules(false)
 	manager.participants_fn = _participants
-	manager.team_fn = func(_key: String) -> int: return 1
+	# The side they are actually on, not a constant.
+	#
+	# dot-spectate keys teams by [code]int[/code] and treats 0 as "no team". A hardcoded
+	# 1 made everybody — including somebody on the spectator side — a team-mate of
+	# everybody, which is what `force_camera` reads as permission to watch. The stack is
+	# built before anything can spectate, and 0 is the honest answer while it is not.
+	manager.team_fn = func(key: String) -> int:
+		return game.player_stack.team_index_of(key) if game.player_stack != null else 0
 	manager.alive_fn = _alive
 	manager.pose_fn = _pose_of
 	add_child(manager)

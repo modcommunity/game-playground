@@ -1,7 +1,6 @@
 extends "../game/playground_map.gd"
 
 const PlaygroundGeometry := preload("../game/playground_geometry.gd")
-const PlaygroundMap := preload("../game/playground_map.gd")
 const PlaygroundWorldGen := preload("../game/playground_worldgen.gd")
 
 ## `pg_generated` — the sandbox nobody wrote down.

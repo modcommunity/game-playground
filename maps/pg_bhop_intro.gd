@@ -1,7 +1,6 @@
 extends "../game/playground_map.gd"
 
 const PlaygroundGeometry := preload("../game/playground_geometry.gd")
-const PlaygroundMap := preload("../game/playground_map.gd")
 
 ## `pg_bhop_intro` — a straight run of blocks with gaps that widen.
 ##

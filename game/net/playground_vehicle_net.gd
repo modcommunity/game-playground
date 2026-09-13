@@ -1,6 +1,5 @@
 extends "playground_prop_net.gd"
 
-const PlaygroundPropNet := preload("playground_prop_net.gd")
 const PlaygroundVehicle := preload("../playground_vehicle.gd")
 
 ## What a vehicle replicates, through [DotVehicleNetSync].

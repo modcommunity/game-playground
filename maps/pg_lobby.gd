@@ -112,6 +112,22 @@ const TOWER_RISE := 0.6
 ## The top surface of the start pad, at the foot of the tower.
 const TOWER_BASE_Y := 2.0
 
+## How tall the two split bands are, measured up from the platform that ends each
+## third of the climb.
+##
+## [b]1.5 m rather than the 60 cm that reads right, and the difference is a warning
+## nobody should have to learn to ignore.[/b] dot-timer samples a point per tick, so
+## its thin-zone advisory flags any zone shorter than one tick of travel — and at the
+## 67 m/s a bunny-hop server assumes, one tick at 60 Hz is 1.12 m. A 60 cm band is
+## flagged on every map change, backtrace and all, on a server that carries this map.
+## The zone was never actually at risk: it is entered going UP at about 6.8 m/s, which
+## is 11 cm a tick. But an advisory that cries wolf on a stock map is one that gets
+## ignored on the imported map where it is right, so the band is made taller than the
+## check's worst case instead. Its LOWER face is what fires, and that has not moved:
+## the split is recorded at the same height and the same instant as before. 1.5 m also
+## keeps 1.5 m of air below the next band, five steps of `TOWER_RISE` above.
+const TOWER_STAGE_BAND := 1.5
+
 const TOWER_PLATFORM := Vector3(2.2, 0.4, 2.2)
 
 ## The tower's start pad. Smaller than the jump course's [constant PAD], and that is
@@ -607,8 +623,8 @@ static func _add_tower_zones(zones: DotTimerZoneSet) -> void:
 	# A vertical line across a spiral is crossed twice per turn, so a stage drawn the
 	# way bonus 1's is would fire on the way round as well as on the way up. The thing
 	# that only happens once here is reaching a height, so that is what is measured:
-	# a thin slab over the whole tower, at the height of the platform that ends each
-	# third of the climb.
+	# a slab over the whole tower, at the height of the platform that ends each third
+	# of the climb, `TOWER_STAGE_BAND` tall for the reason given there.
 	for split in [1, 2]:
 		var at := tower_platform_centre(TOWER_STEPS * split / 3 - 1)
 		var stage := DotTimerZone.make(DotTimerZone.Kind.STAGE, track)
@@ -621,7 +637,7 @@ static func _add_tower_zones(zones: DotTimerZoneSet) -> void:
 			),
 			Vector3(
 				TOWER_X + TOWER_RADIUS + 3.0,
-				at.y + TOWER_PLATFORM.y * 0.5 + 0.6,
+				at.y + TOWER_PLATFORM.y * 0.5 + TOWER_STAGE_BAND,
 				TOWER_Z + TOWER_RADIUS + 3.0
 			)
 		)

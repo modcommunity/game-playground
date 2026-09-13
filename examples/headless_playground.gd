@@ -1,5 +1,19 @@
 extends Node
 
+const Playground := preload("../game/playground.gd")
+const PlaygroundBrowser := preload("../game/client/playground_browser.gd")
+const PlaygroundClient := preload("../game/playground_client.gd")
+const PlaygroundConfig := preload("../game/playground_config.gd")
+const PlaygroundEntity := preload("../game/entities/playground_entity.gd")
+const PlaygroundIcons := preload("../game/playground_icons.gd")
+const PlaygroundPlayer := preload("../game/playground_player.gd")
+const PlaygroundProp := preload("../game/playground_prop.gd")
+const PlaygroundSpawnMenu := preload("../game/playground_spawn_menu.gd")
+const PlaygroundSpawnables := preload("../game/playground_spawnables.gd")
+const PlaygroundVehicle := preload("../game/playground_vehicle.gd")
+const PlaygroundWeaponDef := preload("../game/weapons/playground_weapon_def.gd")
+const PlaygroundWeapons := preload("../game/playground_weapons.gd")
+
 ## Runs the whole playground: a bot surfs a map from start to finish, its run is
 ## timed and filed, props are spawned and moved, and the map is changed underneath.
 ##

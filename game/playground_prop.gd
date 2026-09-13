@@ -1,4 +1,3 @@
-class_name PlaygroundProp
 extends RigidBody3D
 
 ## One spawnable thing, built from its [DotPropDef] rather than from a saved scene.

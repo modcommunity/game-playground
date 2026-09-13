@@ -1,5 +1,8 @@
-class_name PlaygroundSpectate
 extends Node
+
+const Playground := preload("playground.gd")
+const PlaygroundArena := preload("playground_arena.gd")
+const PlaygroundPlayer := preload("playground_player.gd")
 
 ## Watching somebody else build, or fight, or drive into a wall.
 ##

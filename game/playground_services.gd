@@ -1,5 +1,8 @@
-class_name PlaygroundServices
 extends Node
+
+const Playground := preload("playground.gd")
+const PlaygroundNetBridge := preload("net/playground_net_bridge.gd")
+const PlaygroundPlayer := preload("playground_player.gd")
 
 ## Chat, moderation and voice, wired to this sandbox's people and this game's wire.
 ##

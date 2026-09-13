@@ -1,5 +1,18 @@
 extends Node
 
+const Playground := preload("../game/playground.gd")
+const PlaygroundArena := preload("../game/playground_arena.gd")
+const PlaygroundConfig := preload("../game/playground_config.gd")
+const PlaygroundDowns := preload("../game/playground_downs.gd")
+const PlaygroundEvents := preload("../game/net/playground_events.gd")
+const PlaygroundPlatform := preload("../game/playground_platform.gd")
+const PlaygroundProgress := preload("../game/playground_progress.gd")
+const PlaygroundServices := preload("../game/playground_services.gd")
+const PlaygroundShop := preload("../game/playground_shop.gd")
+const PlaygroundSpectate := preload("../game/playground_spectate.gd")
+const PlaygroundVote := preload("../game/playground_vote.gd")
+const PlaygroundWaves := preload("../game/playground_waves.gd")
+
 ## Boots a real [DotServer], loads the playground module into it, and runs the
 ## commands an operator and an admin would actually type.
 ##

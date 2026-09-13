@@ -1,5 +1,9 @@
 extends SceneTree
 
+const Playground := preload("../game/playground.gd")
+const PlaygroundConfig := preload("../game/playground_config.gd")
+const PlaygroundPlayer := preload("../game/playground_player.gd")
+
 ## Renders the sandbox in first person and in third, so a person can look at both.
 ##
 ## [b]A camera is the one thing in this repository no assertion reaches.[/b] Every check

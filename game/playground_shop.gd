@@ -1,5 +1,6 @@
-class_name PlaygroundShop
 extends Node
+
+const Playground := preload("playground.gd")
 
 ## A sandbox with a price list.
 ##

@@ -1,4 +1,3 @@
-class_name PlaygroundVehicles
 extends RefCounted
 
 ## Everything this build can be driven in, and how each one handles.

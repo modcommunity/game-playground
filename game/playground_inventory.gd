@@ -1,5 +1,6 @@
-class_name PlaygroundInventory
 extends Node
+
+const PlaygroundSpawnables := preload("playground_spawnables.gd")
 
 ## What a player is carrying, over dot-inventory.
 ##

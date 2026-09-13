@@ -1,5 +1,8 @@
-class_name PlaygroundDowns
 extends Node
+
+const Playground := preload("playground.gd")
+const PlaygroundArena := preload("playground_arena.gd")
+const PlaygroundPlayer := preload("playground_player.gd")
 
 ## Down rather than dead, and the five seconds somebody spends picking you up.
 ##

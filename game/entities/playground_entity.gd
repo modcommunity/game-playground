@@ -1,5 +1,8 @@
-class_name PlaygroundEntity
-extends PlaygroundProp
+extends "../playground_prop.gd"
+
+const Playground := preload("../playground.gd")
+const PlaygroundPlayer := preload("../playground_player.gd")
+const PlaygroundProp := preload("../playground_prop.gd")
 
 ## A prop with a script: the base every NPC in the catalogue extends.
 ##

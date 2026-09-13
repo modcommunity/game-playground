@@ -1,5 +1,6 @@
-class_name PlaygroundBrowser
 extends DotScreen
+
+const Playground := preload("../playground.gd")
 
 ## The server list: what a person sees before they are in a game.
 ##

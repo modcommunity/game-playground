@@ -1,5 +1,10 @@
 extends Node
 
+const Playground := preload("../game/playground.gd")
+const PlaygroundConfig := preload("../game/playground_config.gd")
+const PlaygroundPlayer := preload("../game/playground_player.gd")
+const PlaygroundPlayerStack := preload("../game/playground_player_stack.gd")
+
 ## The player stack, run against a real sandbox rather than against a stub.
 ##
 ## [codeblock]

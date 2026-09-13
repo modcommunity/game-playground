@@ -1,4 +1,3 @@
-class_name PlaygroundParty
 extends Node
 
 ## A sandbox for friends, and the one place a host migration would be a catastrophe.

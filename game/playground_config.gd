@@ -1,4 +1,3 @@
-class_name PlaygroundConfig
 extends DotConfig
 
 ## Everything the playground is configured with, layered like every [DotConfig]:

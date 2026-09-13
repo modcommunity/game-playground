@@ -1,5 +1,7 @@
-class_name PlaygroundEvent
 extends DotNetMessage
+
+const PlaygroundEvent := preload("playground_event.gd")
+const PlaygroundEvents := preload("playground_events.gd")
 
 ## Anything the authority tells a client that is not a snapshot. Reliable, to clients.
 

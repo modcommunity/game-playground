@@ -1,5 +1,17 @@
-class_name PlaygroundNetBridge
 extends Node
+
+const Playground := preload("../playground.gd")
+const PlaygroundEvent := preload("playground_event.gd")
+const PlaygroundEvents := preload("playground_events.gd")
+const PlaygroundNetCommand := preload("playground_net_command.gd")
+const PlaygroundNetLink := preload("playground_net_link.gd")
+const PlaygroundPlayer := preload("../playground_player.gd")
+const PlaygroundPlayerNet := preload("playground_player_net.gd")
+const PlaygroundProp := preload("../playground_prop.gd")
+const PlaygroundPropNet := preload("playground_prop_net.gd")
+const PlaygroundRequest := preload("playground_request.gd")
+const PlaygroundSpawnables := preload("../playground_spawnables.gd")
+const PlaygroundVehicleNet := preload("playground_vehicle_net.gd")
 
 ## Joins a [Playground] to a [DotNetManager]. The netcode seam, and the only file in
 ## this project that names both.

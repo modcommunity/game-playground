@@ -1,5 +1,7 @@
-class_name PlaygroundNetLink
 extends Node
+
+const PlaygroundNetBridge := preload("playground_net_bridge.gd")
+const PlaygroundNetLink := preload("playground_net_link.gd")
 
 ## The four remote calls this game needs, on one node that exists on both ends.
 ##

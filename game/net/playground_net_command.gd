@@ -1,5 +1,6 @@
-class_name PlaygroundNetCommand
 extends DotNetInput
+
+const PlaygroundNetCommand := preload("playground_net_command.gd")
 
 ## One tick of a player's intent, on the wire: a [DotFpsCommand] and nothing else.
 ##

@@ -1,5 +1,7 @@
-class_name PlaygroundRequest
 extends DotNetMessage
+
+const PlaygroundEvents := preload("playground_events.gd")
+const PlaygroundRequest := preload("playground_request.gd")
 
 ## Anything a client asks the authority for. Reliable, rare, to the server only.
 ##

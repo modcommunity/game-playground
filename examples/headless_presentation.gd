@@ -1,5 +1,12 @@
 extends Node
 
+const PlaygroundInventory := preload("../game/playground_inventory.gd")
+const PlaygroundParty := preload("../game/playground_party.gd")
+const PlaygroundPresentation := preload("../game/playground_presentation.gd")
+const PlaygroundServices := preload("../game/playground_services.gd")
+const PlaygroundSpawnables := preload("../game/playground_spawnables.gd")
+const PlaygroundWorldGen := preload("../game/playground_worldgen.gd")
+
 ## The five addons this game gained at once: settings, randomness, audio, effects and a
 ## console — plus the generated map, the carried inventory, and the party.
 ##

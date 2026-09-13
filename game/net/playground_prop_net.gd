@@ -1,4 +1,3 @@
-class_name PlaygroundPropNet
 extends DotNetBehaviour
 
 ## What a prop, an NPC or anything else with rigid-body physics replicates: where it is

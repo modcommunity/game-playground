@@ -1,5 +1,7 @@
-class_name PlaygroundHud
 extends Control
+
+const Playground := preload("playground.gd")
+const PlaygroundPlayer := preload("playground_player.gd")
 
 ## The playground's HUD: the timer, the speedometer, the strafe statistics, and a
 ## line saying what just happened.

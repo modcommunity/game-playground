@@ -1,5 +1,10 @@
 extends SceneTree
 
+const PlaygroundPresentation := preload("../game/playground_presentation.gd")
+const PlaygroundSpawnMenu := preload("../game/playground_spawn_menu.gd")
+const PlaygroundSpawnables := preload("../game/playground_spawnables.gd")
+const PlaygroundWeapons := preload("../game/playground_weapons.gd")
+
 ## Renders this game's own screens to `screenshots/` so a person can look at them.
 ##
 ## Separate from `screenshot.gd`, which renders MAPS. The spawn menu is the screen worth

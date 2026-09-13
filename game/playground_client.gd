@@ -1,5 +1,17 @@
-class_name PlaygroundClient
 extends Node
+
+const Playground := preload("playground.gd")
+const PlaygroundBrowser := preload("client/playground_browser.gd")
+const PlaygroundConfig := preload("playground_config.gd")
+const PlaygroundHud := preload("playground_hud.gd")
+const PlaygroundNetBridge := preload("net/playground_net_bridge.gd")
+const PlaygroundPlayer := preload("playground_player.gd")
+const PlaygroundPresentation := preload("playground_presentation.gd")
+const PlaygroundServices := preload("playground_services.gd")
+const PlaygroundSpawnMenu := preload("playground_spawn_menu.gd")
+const PlaygroundVoice := preload("client/playground_voice.gd")
+const PlaygroundWeapon := preload("weapons/playground_weapon.gd")
+const PlaygroundWeapons := preload("playground_weapons.gd")
 
 ## Boots a playable playground: one local player, a camera, a HUD, a spawn menu and
 ## the keys.

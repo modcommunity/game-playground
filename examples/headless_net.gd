@@ -1,5 +1,16 @@
 extends Node
 
+const Playground := preload("../game/playground.gd")
+const PlaygroundConfig := preload("../game/playground_config.gd")
+const PlaygroundEvents := preload("../game/net/playground_events.gd")
+const PlaygroundNetBridge := preload("../game/net/playground_net_bridge.gd")
+const PlaygroundNetCommand := preload("../game/net/playground_net_command.gd")
+const PlaygroundPlayer := preload("../game/playground_player.gd")
+const PlaygroundPropNet := preload("../game/net/playground_prop_net.gd")
+const PlaygroundServices := preload("../game/playground_services.gd")
+const PlaygroundVehicle := preload("../game/playground_vehicle.gd")
+const PlaygroundVehicleNet := preload("../game/net/playground_vehicle_net.gd")
+
 ## game-playground over the wire: a real server, a real client, and a lossy loopback
 ## between them.
 ##

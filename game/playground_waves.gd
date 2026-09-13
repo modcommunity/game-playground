@@ -1,5 +1,7 @@
-class_name PlaygroundWaves
 extends Node
+
+const Playground := preload("playground.gd")
+const PlaygroundPlayer := preload("playground_player.gd")
 
 ## NPCs the **server** releases, paced by dot-npc-ai-director.
 ##

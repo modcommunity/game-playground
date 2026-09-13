@@ -1,4 +1,3 @@
-class_name PlaygroundCharacter
 extends DotPlayerModelVisual
 
 ## The player's body, drawn from a definition rather than loaded from art.

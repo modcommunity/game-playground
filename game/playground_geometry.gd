@@ -1,4 +1,3 @@
-class_name PlaygroundGeometry
 extends RefCounted
 
 ## Builds dev-textured collision geometry in code, so the maps need no art.

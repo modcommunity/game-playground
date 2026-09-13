@@ -1,5 +1,9 @@
-class_name PlaygroundSpawnMenu
 extends DotScreen
+
+const PlaygroundIcons := preload("playground_icons.gd")
+const PlaygroundSpawnables := preload("playground_spawnables.gd")
+const PlaygroundWeaponDef := preload("weapons/playground_weapon_def.gd")
+const PlaygroundWeapons := preload("playground_weapons.gd")
 
 ## The spawn menu: hold Q, pick something, click it.
 ##

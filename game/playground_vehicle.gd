@@ -1,5 +1,6 @@
-class_name PlaygroundVehicle
-extends PlaygroundProp
+extends "playground_prop.gd"
+
+const PlaygroundProp := preload("playground_prop.gd")
 
 ## One vehicle body, built from its definition — the same way every other spawnable in
 ## this project is, and for the same reason: this build ships no art.

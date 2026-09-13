@@ -1,5 +1,6 @@
-class_name PlaygroundWorldGen
 extends RefCounted
+
+const PlaygroundGeometry := preload("playground_geometry.gd")
 
 ## A generated sandbox: a pipeline, a document, and boxes extruded out of it.
 ##

@@ -1,5 +1,18 @@
 extends DotModule
 
+const Playground := preload("playground.gd")
+const PlaygroundArena := preload("playground_arena.gd")
+const PlaygroundDowns := preload("playground_downs.gd")
+const PlaygroundNetBridge := preload("net/playground_net_bridge.gd")
+const PlaygroundPlatform := preload("playground_platform.gd")
+const PlaygroundPlayer := preload("playground_player.gd")
+const PlaygroundProgress := preload("playground_progress.gd")
+const PlaygroundServices := preload("playground_services.gd")
+const PlaygroundShop := preload("playground_shop.gd")
+const PlaygroundSpectate := preload("playground_spectate.gd")
+const PlaygroundVote := preload("playground_vote.gd")
+const PlaygroundWaves := preload("playground_waves.gd")
+
 ## Binds a [Playground] to a [DotServer]: the console commands an operator and an
 ## admin actually type.
 ##

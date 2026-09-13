@@ -1,5 +1,6 @@
-class_name PlaygroundProgress
 extends Node
+
+const Playground := preload("playground.gd")
 
 ## Per-player statistics, and what they are worth: dot-stats and dot-achievements.
 ##

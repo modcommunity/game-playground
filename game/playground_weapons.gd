@@ -1,5 +1,7 @@
-class_name PlaygroundWeapons
 extends RefCounted
+
+const PlaygroundWeapon := preload("weapons/playground_weapon.gd")
+const PlaygroundWeaponDef := preload("weapons/playground_weapon_def.gd")
 
 ## The arsenal: what a player can hold, and how a script becomes a weapon.
 ##

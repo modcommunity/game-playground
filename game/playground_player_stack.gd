@@ -1,5 +1,8 @@
-class_name PlaygroundPlayerStack
 extends Node
+
+const Playground := preload("playground.gd")
+const PlaygroundArena := preload("playground_arena.gd")
+const PlaygroundPlayer := preload("playground_player.gd")
 
 ## The player-facing addons, stood up once and bound to the sandbox.
 ##

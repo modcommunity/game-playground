@@ -1,5 +1,7 @@
-class_name PlaygroundWeapon
 extends DotPropTool
+
+const Playground := preload("../playground.gd")
+const PlaygroundWeaponDef := preload("playground_weapon_def.gd")
 
 ## The base every SWEP extends: two mouse buttons and a tick.
 ##

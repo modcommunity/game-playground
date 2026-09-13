@@ -1,5 +1,6 @@
-class_name PlaygroundPresentation
 extends Node
+
+const PlaygroundServices := preload("playground_services.gd")
 
 ## Settings, randomness, audio, effects and a console.
 ##

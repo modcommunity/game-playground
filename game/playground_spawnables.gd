@@ -1,5 +1,6 @@
-class_name PlaygroundSpawnables
 extends RefCounted
+
+const PlaygroundVehicles := preload("playground_vehicles.gd")
 
 ## Everything this build can put in the world, and what kind of thing each one is.
 ##

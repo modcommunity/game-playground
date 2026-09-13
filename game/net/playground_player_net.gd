@@ -1,5 +1,8 @@
-class_name PlaygroundPlayerNet
 extends DotNetBehaviour
+
+const PlaygroundNetBridge := preload("playground_net_bridge.gd")
+const PlaygroundNetCommand := preload("playground_net_command.gd")
+const PlaygroundPlayer := preload("../playground_player.gd")
 
 ## What a networked playground player replicates: the movement state, and nothing else.
 ##

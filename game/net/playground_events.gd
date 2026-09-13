@@ -1,4 +1,3 @@
-class_name PlaygroundEvents
 extends RefCounted
 
 ## The wire format for everything that is not a snapshot or an input.

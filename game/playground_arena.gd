@@ -1,5 +1,8 @@
-class_name PlaygroundArena
 extends Node
+
+const Playground := preload("playground.gd")
+const PlaygroundPlayer := preload("playground_player.gd")
+const PlaygroundWeaponDef := preload("weapons/playground_weapon_def.gd")
 
 ## The fight, when an operator turns one on: health, weapons that hurt, and a round.
 ##

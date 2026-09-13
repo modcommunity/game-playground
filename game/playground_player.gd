@@ -1,5 +1,6 @@
-class_name PlaygroundPlayer
 extends CharacterBody3D
+
+const PlaygroundCharacter := preload("playground_character.gd")
 
 ## One player: movement, view, the timer, and the tools.
 ##

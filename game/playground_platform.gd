@@ -1,4 +1,3 @@
-class_name PlaygroundPlatform
 extends Node
 
 ## The identity half, in one node: who somebody is, what they are called, what they wear.

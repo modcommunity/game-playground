@@ -1,4 +1,7 @@
-extends PlaygroundMap
+extends "../game/playground_map.gd"
+
+const PlaygroundGeometry := preload("../game/playground_geometry.gd")
+const PlaygroundMap := preload("../game/playground_map.gd")
 
 ## `pg_surf_intro` — two ramps meeting in a valley, a start platform and a finish.
 ##

@@ -1,5 +1,6 @@
-class_name PlaygroundVote
 extends Node
+
+const Playground := preload("playground.gd")
 
 ## What plays next, decided by the players.
 ##

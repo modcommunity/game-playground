@@ -1,4 +1,3 @@
-class_name PlaygroundMap
 extends Node3D
 
 ## Base class for the playground's built-in maps.

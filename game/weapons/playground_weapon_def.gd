@@ -1,5 +1,6 @@
-class_name PlaygroundWeaponDef
 extends RefCounted
+
+const PlaygroundWeaponDef := preload("playground_weapon_def.gd")
 
 ## One thing a player can hold, as a document rather than as a class.
 ##

@@ -1,5 +1,8 @@
-class_name PlaygroundIcons
 extends RefCounted
+
+const PlaygroundProp := preload("playground_prop.gd")
+const PlaygroundSpawnables := preload("playground_spawnables.gd")
+const PlaygroundWeaponDef := preload("weapons/playground_weapon_def.gd")
 
 ## Icons for the spawn menu, drawn from the definition when there is no artwork.
 ##

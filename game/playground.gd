@@ -1,5 +1,16 @@
-class_name Playground
 extends Node3D
+
+const PlaygroundConfig := preload("playground_config.gd")
+const PlaygroundEntity := preload("entities/playground_entity.gd")
+const PlaygroundMap := preload("playground_map.gd")
+const PlaygroundPlayer := preload("playground_player.gd")
+const PlaygroundPlayerStack := preload("playground_player_stack.gd")
+const PlaygroundProp := preload("playground_prop.gd")
+const PlaygroundSpawnables := preload("playground_spawnables.gd")
+const PlaygroundVehicle := preload("playground_vehicle.gd")
+const PlaygroundVehicles := preload("playground_vehicles.gd")
+const PlaygroundWeaponDef := preload("weapons/playground_weapon_def.gd")
+const PlaygroundWeapons := preload("playground_weapons.gd")
 
 ## The playground: a sandbox with a surf map, a bhop map and a lobby, timed and
 ## ranked, with props you can spawn and a physics gun to move them with.

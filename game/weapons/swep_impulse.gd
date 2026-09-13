@@ -1,4 +1,4 @@
-extends "res://game/weapons/playground_weapon.gd"
+extends "playground_weapon.gd"
 
 ## A shockwave. Left click shoves everything nearby away, right click pulls it in.
 ##

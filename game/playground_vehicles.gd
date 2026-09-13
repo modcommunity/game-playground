@@ -1,5 +1,7 @@
 extends RefCounted
 
+const PlaygroundPaths := preload("playground_paths.gd")
+
 ## Everything this build can be driven in, and how each one handles.
 ##
 ## [b]A second catalogue beside the prop one, and it is deliberately not merged with
@@ -28,7 +30,7 @@ const CHANNEL := "playground.vehicles"
 ## vehicle needs one at the root and a [VehicleBody3D] is a [RigidBody3D] — so the hover
 ## skiff is perfectly happy in the same scene and this project keeps its "one scene, one
 ## script, built from the definition" shape.
-const SCENE := "res://game/vehicle.tscn"
+static var SCENE := PlaygroundPaths.rebase("res://game/vehicle.tscn")
 
 
 ## Whether a prop definition is really a vehicle, and which one.

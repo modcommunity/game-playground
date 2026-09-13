@@ -1,4 +1,4 @@
-extends "res://game/weapons/playground_weapon.gd"
+extends "playground_weapon.gd"
 
 ## Fires whatever the spawn menu has armed. Left click lobs it, right click hurls it.
 ##

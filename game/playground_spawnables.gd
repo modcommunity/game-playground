@@ -1,5 +1,7 @@
 extends RefCounted
 
+const PlaygroundPaths := preload("playground_paths.gd")
+
 const PlaygroundVehicles := preload("playground_vehicles.gd")
 
 ## Everything this build can put in the world, and what kind of thing each one is.
@@ -29,11 +31,11 @@ const PlaygroundVehicles := preload("playground_vehicles.gd")
 const CHANNEL := "playground.spawnables"
 
 ## The scene an inert prop is built into. Carries [PlaygroundProp] already.
-const SCENE_PROP := "res://game/prop.tscn"
+static var SCENE_PROP := PlaygroundPaths.rebase("res://game/prop.tscn")
 
 ## The scene an entity is built into: a bare [RigidBody3D] whose script comes from the
 ## definition. Bare, because attaching one here would mean every entity replaced it.
-const SCENE_ENTITY := "res://game/entity.tscn"
+static var SCENE_ENTITY := PlaygroundPaths.rebase("res://game/entity.tscn")
 
 enum Kind {
 	## A shape with a mass. No code.
@@ -237,7 +239,7 @@ static func catalogue() -> DotPropCatalogue:
 		# tuning key called "extent" would otherwise silently resize the body.
 		var meta := {
 			"kind": "entity",
-			"script": "res://game/entities/%s.gd" % row[2],
+			"script": PlaygroundPaths.rebase("res://game/entities/%s.gd") % row[2],
 			"shape": "box",
 			"extent": [row[3].x, row[3].y, row[3].z],
 			"colour": row[4],

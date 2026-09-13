@@ -1,4 +1,4 @@
-extends "res://game/entities/playground_entity.gd"
+extends "playground_entity.gd"
 
 ## Walks toward the player it has committed to, and gives up when they get far enough.
 ##

@@ -1,5 +1,7 @@
 extends DotPropTool
 
+const PlaygroundPaths := preload("../playground_paths.gd")
+
 const Playground := preload("../playground.gd")
 const PlaygroundWeaponDef := preload("playground_weapon_def.gd")
 

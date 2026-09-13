@@ -1,5 +1,7 @@
 extends Node
 
+const PlaygroundPaths := preload("playground_paths.gd")
+
 const PlaygroundServices := preload("playground_services.gd")
 
 ## Settings, randomness, audio, effects and a console.
@@ -19,7 +21,7 @@ const CHANNEL := "playground.presentation"
 
 const SCHEMA_VERSION := 1
 const SOUND_DIR := "res://audio"
-const FX_DIR := "res://scenes/fx"
+static var FX_DIR := PlaygroundPaths.rebase("res://scenes/fx")
 
 var settings: DotSettingsManager = null
 var rng: DotRandomManager = null

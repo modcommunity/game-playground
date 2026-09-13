@@ -1,5 +1,7 @@
 extends RefCounted
 
+const PlaygroundPaths := preload("playground_paths.gd")
+
 const PlaygroundWeapon := preload("weapons/playground_weapon.gd")
 const PlaygroundWeaponDef := preload("weapons/playground_weapon_def.gd")
 
@@ -21,7 +23,7 @@ const PlaygroundWeaponDef := preload("weapons/playground_weapon_def.gd")
 const CHANNEL := "playground.weapons"
 
 ## Where the shipped weapons live. A delivered one points anywhere its pack is mounted.
-const DIRECTORY := "res://game/weapons"
+static var DIRECTORY := PlaygroundPaths.rebase("res://game/weapons")
 
 
 ## Instantiates a weapon from its definition, or null with a reason logged.

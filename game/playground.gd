@@ -1,5 +1,7 @@
 extends Node3D
 
+const PlaygroundPaths := preload("playground_paths.gd")
+
 const PlaygroundConfig := preload("playground_config.gd")
 const PlaygroundEntity := preload("entities/playground_entity.gd")
 const PlaygroundMap := preload("playground_map.gd")
@@ -969,7 +971,7 @@ static func map_catalogue() -> DotMapCatalogue:
 		map.display_name = row[1]
 		map.kind = row[2]
 		map.tier = row[3]
-		map.scene_path = "res://maps/%s.tscn" % String(row[0])
+		map.scene_path = PlaygroundPaths.rebase("res://maps/%s.tscn") % String(row[0])
 		map.author = "playground"
 		catalogue.add(map)
 

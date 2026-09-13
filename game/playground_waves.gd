@@ -1,5 +1,7 @@
 extends Node
 
+const PlaygroundPaths := preload("playground_paths.gd")
+
 const Playground := preload("playground.gd")
 const PlaygroundPlayer := preload("playground_player.gd")
 
@@ -31,8 +33,8 @@ const CHANNEL := "playground.waves"
 ## an unprefixed name is one another game can silently overwrite. `entity.tscn`,
 ## `prop.tscn` and `vehicle.tscn` predate that rule and are the reason it exists: the lobby
 ## added a `prop.tscn` and collided with this project's on the first vendored build.
-const WAVE_SCENE := "res://game/playground_npc.tscn"
-const WAVE_BRAIN := "res://game/entities/wave_brain.gd"
+static var WAVE_SCENE := PlaygroundPaths.rebase("res://game/playground_npc.tscn")
+static var WAVE_BRAIN := PlaygroundPaths.rebase("res://game/entities/wave_brain.gd")
 
 ## Candidate id prefix, so a target id can be turned back into a player.
 ##

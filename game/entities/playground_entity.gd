@@ -1,5 +1,7 @@
 extends "../playground_prop.gd"
 
+const PlaygroundPaths := preload("../playground_paths.gd")
+
 const Playground := preload("../playground.gd")
 const PlaygroundPlayer := preload("../playground_player.gd")
 const PlaygroundProp := preload("../playground_prop.gd")

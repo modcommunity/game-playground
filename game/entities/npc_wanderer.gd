@@ -1,4 +1,4 @@
-extends "res://game/entities/playground_entity.gd"
+extends "playground_entity.gd"
 
 ## Walks about, turns when it is bored or stuck, and hops if the catalogue asks it to.
 ##

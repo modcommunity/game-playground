@@ -1,5 +1,7 @@
 extends DotModule
 
+const PlaygroundPaths := preload("playground_paths.gd")
+
 const Playground := preload("playground.gd")
 const PlaygroundArena := preload("playground_arena.gd")
 const PlaygroundDowns := preload("playground_downs.gd")

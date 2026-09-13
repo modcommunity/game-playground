@@ -1,4 +1,4 @@
-extends "res://game/entities/playground_entity.gd"
+extends "playground_entity.gd"
 
 ## A chaser with a **decision** rather than an `if`: dot-npc-ai's state machine and
 ## characteristics table, on top of dot-npc's senses.
